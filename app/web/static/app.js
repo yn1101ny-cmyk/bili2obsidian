@@ -20,9 +20,99 @@ async function api(path, options) {
   return body;
 }
 
-/* ------------------------------------------------------------------ */
-/* 首页：提交任务 + 轮询进度                                            */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* 笔记页：左侧导航 + 滚动监听 + 点击定位                                 */
+/* ==================================================================== */
+
+/** 顶栏高度（与 CSS 里的 --header-h 保持一致）。 */
+function headerHeight() {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--header-h")
+    .trim();
+  const parsed = parseFloat(raw);
+  return Number.isFinite(parsed) ? parsed : 64;
+}
+
+function wireScrollSpy() {
+  const toc = $("toc");
+  const body = $("note-body");
+  if (!toc || !body) return;
+
+  const links = Array.from(toc.querySelectorAll("a[data-anchor]"));
+  if (!links.length) return;
+
+  // 只在正文范围内找标题，避免把别处的 h2 算进来
+  const headings = links
+    .map((a) => document.getElementById(a.dataset.anchor))
+    .filter(Boolean);
+  if (!headings.length) return;
+
+  const byId = new Map();
+  links.forEach((a) => byId.set(a.dataset.anchor, a));
+
+  let activeId = null;
+
+  function setActive(id) {
+    if (id === activeId) return;          // 避免每帧都改 DOM
+    activeId = id;
+    links.forEach((a) => {
+      const on = a.dataset.anchor === id;
+      a.classList.toggle("active", on);
+      // 横向导航（窄屏）时把当前项滚进可见区域
+      if (on && a.parentElement.parentElement.scrollWidth > a.parentElement.parentElement.clientWidth) {
+        a.scrollIntoView({ block: "nearest", inline: "center" });
+      }
+    });
+  }
+
+  function updateActive() {
+    // 判定线：顶栏下方 24px 处。落在判定线上方**最后一个**标题就是当前小节。
+    // 这种做法比 IntersectionObserver 可靠 —— 后者在页面底部常常不触发。
+    const line = headerHeight() + 24;
+    let current = headings[0];
+
+    for (const h of headings) {
+      if (h.getBoundingClientRect().top - line <= 0) current = h;
+      else break;
+    }
+
+    // 滚到底时强制高亮最后一项，否则最后一节永远点不亮
+    const atBottom =
+      window.innerHeight + window.scrollY >=
+      document.documentElement.scrollHeight - 4;
+    if (atBottom) current = headings[headings.length - 1];
+
+    setActive(current.id);
+  }
+
+  let ticking = false;
+  function onScroll() {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(() => {
+      ticking = false;
+      updateActive();
+    });
+  }
+
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("resize", onScroll, { passive: true });
+
+  // 点击时立刻高亮，不等滚动结束 —— 否则会有明显的延迟感
+  links.forEach((a) => {
+    a.addEventListener("click", () => {
+      setActive(a.dataset.anchor);
+      // 平滑滚动与落点偏移由 CSS 负责：
+      // html { scroll-behavior: smooth } + h2 { scroll-margin-top: ... }
+    });
+  });
+
+  updateActive();
+}
+
+/* ==================================================================== */
+/* 首页：提交任务 + 轮询进度                                             */
+/* ==================================================================== */
 
 function fmtElapsed(seconds) {
   if (seconds < 60) return `${seconds} 秒`;
@@ -78,7 +168,7 @@ function renderJob(job) {
       done.innerHTML = "";
       const a = document.createElement("a");
       a.href = `/notes/${job.note_id}`;
-      a.textContent = "✅ 笔记已生成，点这里查看 →";
+      a.textContent = "笔记已生成，点这里查看 →";
       done.appendChild(a);
       $("job-elapsed").textContent = "";
       loadNotes();
@@ -89,8 +179,11 @@ function renderJob(job) {
   }
 }
 
+let currentJobId = null;
+
 function startPolling(jobId) {
   stopPolling();
+  currentJobId = jobId;
   const tick = async () => {
     try {
       renderJob(await api(`/api/jobs/${jobId}`));
@@ -132,13 +225,9 @@ async function submitUrl(event) {
 }
 
 async function cancelJob() {
-  const stage = $("job-stage");
-  if (!stage) return;
+  if (!currentJobId) return;
   try {
-    // 当前任务的 id 从最近一次轮询里拿不到，改用列表里的第一条运行中任务
-    const jobs = await api("/api/jobs?limit=20");
-    const running = jobs.find((j) => !j.done);
-    if (running) await api(`/api/jobs/${running.id}/cancel`, { method: "POST" });
+    await api(`/api/jobs/${currentJobId}/cancel`, { method: "POST" });
   } catch (err) {
     $("job-msg").textContent = `取消失败：${err.message}`;
   }
@@ -186,9 +275,9 @@ async function loadNotes() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* 笔记页                                                              */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* 笔记页：复制 / 删除                                                   */
+/* ==================================================================== */
 
 function wireNotePage() {
   const copyBtn = $("copy-md");
@@ -198,7 +287,7 @@ function wireNotePage() {
       try {
         const data = await api(`/api/notes/${id}/markdown`);
         await navigator.clipboard.writeText(data.markdown || "");
-        copyBtn.textContent = "已复制 ✓";
+        copyBtn.textContent = "已复制";
         setTimeout(() => (copyBtn.textContent = "复制 Markdown"), 1800);
       } catch (err) {
         copyBtn.textContent = "复制失败";
@@ -221,11 +310,11 @@ function wireNotePage() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* 自检页                                                              */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* 自检页                                                                */
+/* ==================================================================== */
 
-const MARK = { ok: "✅", warn: "⚠️", fail: "❌" };
+const MARK = { ok: "✓", warn: "!", fail: "✕" };
 
 function renderChecks(data) {
   const out = $("checks-out");
@@ -301,7 +390,7 @@ function wireChecksPage() {
   $("full-check")?.addEventListener("change", runChecks);
   $("clear-data")?.addEventListener("click", async () => {
     const typed = prompt(
-      '这会删除本机全部数据（笔记、转写缓存、音频、模型），不可撤销。\n\n请输入 DELETE 确认：'
+      "这会删除本机全部数据（笔记、转写缓存、音频、模型），不可撤销。\n\n请输入 DELETE 确认："
     );
     if (typed !== "DELETE") return;
     try {
@@ -317,9 +406,9 @@ function wireChecksPage() {
   });
 }
 
-/* ------------------------------------------------------------------ */
-/* 启动                                                                */
-/* ------------------------------------------------------------------ */
+/* ==================================================================== */
+/* 启动                                                                  */
+/* ==================================================================== */
 
 document.addEventListener("DOMContentLoaded", () => {
   const form = $("note-form");
@@ -332,7 +421,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .then((jobs) => {
         const running = jobs.find((j) => !j.done);
         if (running) {
-          startedAt = Date.now() - (running.progress ? 0 : 0);
+          startedAt = Date.now();
           $("submit-btn").disabled = true;
           renderJob(running);
           startPolling(running.id);
@@ -341,7 +430,10 @@ document.addEventListener("DOMContentLoaded", () => {
       .catch(() => {});
   }
 
-  if ($("note-body")) wireNotePage();
+  if ($("note-body")) {
+    wireNotePage();
+    wireScrollSpy();
+  }
 
   if ($("checks-out")) {
     runChecks();

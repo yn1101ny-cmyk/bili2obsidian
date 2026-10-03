@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from app.schemas import (
+    Actionable,
+    ActionableKind,
     Concept,
+    FocusPlan,
+    FocusPoint,
     KeyPoint,
     Note,
     Transcript,
@@ -193,17 +197,64 @@ def test_human_subtitles_have_highest_confidence():
 
 
 def test_note_is_thin_when_empty():
-    assert Note(title="t", one_liner="", summary="").is_thin()
+    assert Note(title="t", goal="g", one_liner="", summary="").is_thin()
 
 
 def test_note_not_thin_with_key_points():
     note = Note(
         title="t",
+        goal="g",
         one_liner="一句话",
         summary="",
         key_points=[KeyPoint(title="要点", detail="细节")],
     )
     assert not note.is_thin()
+
+
+def test_note_has_substance_requires_focus_or_actionables():
+    """⛔ 产品底线：只有复述式要点的笔记不算「有实质内容」。
+
+    用户反馈的正是这种：「视频介绍了…」一堆，但拿不走任何东西。
+    """
+    only_key_points = Note(
+        title="t",
+        goal="g",
+        one_liner="o",
+        summary="s",
+        key_points=[KeyPoint(title="视频介绍了X", detail="...")],
+    )
+    assert only_key_points.has_substance() is False
+
+    with_focus = Note(
+        title="t",
+        goal="g",
+        one_liner="o",
+        summary="s",
+        focus_points=[FocusPoint(title="重点", detail="怎么做")],
+    )
+    assert with_focus.has_substance() is True
+
+    with_actionable = Note(
+        title="t",
+        goal="g",
+        one_liner="o",
+        summary="s",
+        actionables=[Actionable(title="提示词", content="你是一个...")],
+    )
+    assert with_actionable.has_substance() is True
+
+
+def test_actionable_kind_has_label_and_icon():
+    for kind in ActionableKind:
+        assert kind.label
+        assert kind.icon
+
+
+def test_focus_plan_defaults_are_safe():
+    """降级路径要能无参构造 —— 推断失败时不该反过来把生成搞挂。"""
+    plan = FocusPlan()
+    assert plan.video_kind == ""
+    assert plan.focus == []
 
 
 def test_key_point_clock_handles_none():
@@ -216,9 +267,23 @@ def test_concept_clock():
     assert c.clock() == "01:15"
 
 
+def test_focus_point_clock():
+    fp = FocusPoint(title="t", detail="d", timestamp=143.0)
+    assert fp.clock() == "02:23"
+
+
+def test_chapter_clock():
+    from app.schemas import Chapter
+
+    assert Chapter(title="开场", start=0.0).clock() == "00:00"
+    assert Chapter(title="原理", start=3723.0).clock() == "1:02:03"
+
+
 def test_note_defaults_are_empty_lists():
-    note = Note(title="t", one_liner="o", summary="s")
+    note = Note(title="t", goal="g", one_liner="o", summary="s")
     assert note.outline == []
+    assert note.focus_points == []
+    assert note.actionables == []
     assert note.key_points == []
     assert note.concepts == []
     assert note.follow_ups == []

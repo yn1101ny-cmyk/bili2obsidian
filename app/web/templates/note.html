@@ -1,27 +1,48 @@
 {% extends "base.html" %}
 {% block title %}{{ record.title }} · MyNoteApp{% endblock %}
 
-{% block content %}
-<article class="note">
-  <nav class="crumbs"><a href="/">← 返回首页</a></nav>
+{% block layout %}
+<main class="wrap">
+  <div class="note-layout">
 
-  <div class="note-meta">
-    <span class="pill">{{ record.transcript_source.label }}</span>
-    <span class="pill">可信度 {{ record.transcript_source.confidence }}</span>
-    <span class="pill">{{ record.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
-    <span class="spacer"></span>
-    <button class="ghost" id="copy-md" type="button" data-note-id="{{ record.id }}">
-      复制 Markdown
-    </button>
-    <button class="ghost danger" id="delete-note" type="button" data-note-id="{{ record.id }}">
-      删除
-    </button>
-  </div>
+    {# ---------- 左导航：滚动监听靠它高亮 ---------- #}
+    <aside class="sidebar" id="toc-sidebar">
+      {% if toc %}
+      <p class="sidebar-title">目录</p>
+      <ul class="toc" id="toc">
+        {% for item in toc %}
+        <li><a href="#{{ item.id }}" data-anchor="{{ item.id }}">{{ item.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </aside>
 
-  <div class="markdown" id="note-body">
-    {{ body_html | safe }}
+    {# ---------- 右内容 ---------- #}
+    <div class="note-main">
+      <div class="note-head">
+        <p class="crumbs"><a href="/">← 返回首页</a></p>
+        <h1>{{ record.title }}</h1>
+        <div class="note-meta">
+          <span class="pill">{{ record.transcript_source.label }}</span>
+          <span class="pill">可信度 {{ record.transcript_source.confidence }}</span>
+          <span class="pill">{{ record.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
+          <span class="spacer"></span>
+          <button class="ghost" id="copy-md" type="button" data-note-id="{{ record.id }}">
+            复制 Markdown
+          </button>
+          <button class="ghost danger" id="delete-note" type="button" data-note-id="{{ record.id }}">
+            删除
+          </button>
+        </div>
+      </div>
+
+      <article class="markdown" id="note-body">
+        {{ body_html | safe }}
+      </article>
+    </div>
+
   </div>
-</article>
+</main>
 {% endblock %}
 
 {% block scripts %}

@@ -189,6 +189,13 @@ class NotePipeline:
             if tags:
                 meta.tags = tags
 
+            # 章节是「不分析音频也能拿到」的结构化线索：
+            # 相当于平台已经替我们划分好了视频的主干，
+            # 用它来推断重点比让模型从零猜靠谱得多。
+            # 与字幕共用 player/v2 的缓存，不会多一次请求。
+            if meta.aid is not None and meta.cid:
+                meta.chapters = await bili.get_chapters(meta.aid, meta.cid)
+
             page = meta.page
             cid = meta.cid or 0
 
@@ -196,7 +203,8 @@ class NotePipeline:
                 JobStage.RESOLVING,
                 0.07,
                 f"《{meta.display_title}》"
-                + (f"（共 {meta.total_pages} P）" if meta.total_pages > 1 else ""),
+                + (f"（共 {meta.total_pages} P）" if meta.total_pages > 1 else "")
+                + (f"（含 {len(meta.chapters)} 个章节）" if meta.chapters else ""),
             )
 
             # ---------------- 3. 转写：缓存 → 字幕 → Whisper ----------------

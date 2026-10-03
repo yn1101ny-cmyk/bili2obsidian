@@ -64,7 +64,11 @@ async def run(args: argparse.Namespace) -> int:
     print()
     print(f"  一句话总结：{result.note.one_liner}")
     print()
-    print(f"  大纲 {len(result.note.outline)} 条 ｜ "
+    print(f"  目标：{result.note.goal}")
+    print()
+    print(f"  重点 {len(result.note.focus_points)} 条 ｜ "
+          f"可用 {len(result.note.actionables)} 条 ｜ "
+          f"大纲 {len(result.note.outline)} 条 ｜ "
           f"要点 {len(result.note.key_points)} 条 ｜ "
           f"概念 {len(result.note.concepts)} 条 ｜ "
           f"待查 {len(result.note.follow_ups)} 条 ｜ "

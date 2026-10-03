@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from app.schemas import TranscriptSegment, TranscriptSource
+from app.schemas import Chapter, TranscriptSegment, TranscriptSource
 
 #: 简体中文语言的优先顺序（人工字幕优先于 AI 字幕）
 _PREFERRED_LANGS: tuple[str, ...] = (
@@ -168,6 +168,45 @@ def _to_float(value: Any) -> float | None:
         return max(0.0, float(value))
     except (TypeError, ValueError):
         return None
+
+
+def parse_view_points(payload: Any) -> list[Chapter]:
+    """从 ``/x/player/v2`` 响应里解析 B站 AI 生成的章节。
+
+    **这是未登录就能拿到的免费结构化线索** —— 相当于平台已经替我们
+    把视频分好了块。用它来推断重点，比让模型从零去猜靠谱得多。
+
+    实测（调研子代理）：未登录时 ``subtitle.subtitles`` 是空的，
+    但 ``view_points`` 有内容（8 段）。所以这是「不分析音频」的
+    第一个可用信号。
+    """
+    if not isinstance(payload, dict):
+        return []
+
+    data = payload.get("data", payload)
+    if not isinstance(data, dict):
+        return []
+
+    raw = data.get("view_points")
+    if not isinstance(raw, list):
+        return []
+
+    chapters: list[Chapter] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(
+            item.get("content") or item.get("title") or item.get("name") or ""
+        ).strip()
+        if not title:
+            continue
+        start = _to_float(item.get("from"))
+        if start is None:
+            start = _to_float(item.get("start")) or _to_float(item.get("time")) or 0.0
+        chapters.append(Chapter(title=title, start=start))
+
+    chapters.sort(key=lambda c: c.start)
+    return chapters
 
 
 # ---------------------------------------------------------------------------

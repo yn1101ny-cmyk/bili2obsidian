@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -185,6 +187,79 @@ def test_strip_frontmatter_unterminated_left_alone():
     assert strip_frontmatter(text) == text
 
 
+# ---------------------------------------------------------------------------
+# 目录生成（左侧导航 + 滚动监听靠它）
+# ---------------------------------------------------------------------------
+
+
+def test_add_heading_anchors_assigns_ids():
+    from app.web.markdown_render import add_heading_anchors
+
+    html, toc = add_heading_anchors("<h2>一句话总结</h2><p>x</p><h2>重点</h2>")
+    assert 'id="sec-1"' in html
+    assert 'id="sec-2"' in html
+    assert [t["id"] for t in toc] == ["sec-1", "sec-2"]
+    assert [t["title"] for t in toc] == ["一句话总结", "重点"]
+
+
+def test_add_heading_anchors_ignores_h3():
+    """只有 h2 进目录 —— 小节标题是 h2，条目是 h3。"""
+    from app.web.markdown_render import add_heading_anchors
+
+    html, toc = add_heading_anchors("<h2>小节</h2><h3>条目</h3>")
+    assert len(toc) == 1
+    assert "<h3>条目</h3>" in html
+
+
+def test_add_heading_anchors_truncates_long_titles():
+    from app.web.markdown_render import add_heading_anchors
+
+    _, toc = add_heading_anchors("<h2>" + "很长的标题" * 10 + "</h2>")
+    assert len(toc[0]["title"]) <= 20
+    assert toc[0]["title"].endswith("…")
+
+
+def test_add_heading_anchors_strips_inner_tags():
+    from app.web.markdown_render import add_heading_anchors
+
+    _, toc = add_heading_anchors("<h2>标题 <em>注</em></h2>")
+    assert "标题 注" == toc[0]["title"]
+
+
+def test_add_heading_anchors_unescapes_for_nav():
+    """⚠️ 目录标题会经模板再转义一次，这里必须先反转义，否则显示成 &amp;amp;。"""
+    from app.web.markdown_render import add_heading_anchors
+
+    _, toc = add_heading_anchors("<h2>能直接用的东西 &amp; 示例</h2>")
+    assert toc[0]["title"] == "能直接用的东西 & 示例"
+
+
+def test_add_heading_anchors_on_empty():
+    from app.web.markdown_render import add_heading_anchors
+
+    html, toc = add_heading_anchors("")
+    assert html == ""
+    assert toc == []
+
+
+def test_render_note_body_pipeline():
+    from app.web.markdown_render import render_note_body
+
+    md = "---\ntitle: x\n---\n\n# 大标题\n\n## 重点\n\n正文\n\n## 存疑\n"
+    html, toc = render_note_body(md)
+    assert "bvid" not in html
+    assert "<h1>" in html
+    assert len(toc) == 2
+    assert "sec-1" in html
+
+
+def test_render_note_body_escapes_script():
+    from app.web.markdown_render import render_note_body
+
+    html, _ = render_note_body("## 小节\n\n<script>alert(1)</script>\n")
+    assert "<script>" not in html
+
+
 # ===========================================================================
 # 页面
 # ===========================================================================
@@ -226,6 +301,116 @@ def test_static_js_served(client):
     res = client.get("/static/app.js")
     assert res.status_code == 200
     assert "/api/jobs" in res.text
+
+
+# ---------------------------------------------------------------------------
+# 设计规范守卫
+# ---------------------------------------------------------------------------
+
+#: 用户指定的色板，必须一字不差
+REQUIRED_PALETTE = {
+    "--primary": "#F97316",
+    "--primary-dk": "#EA580C",
+    "--primary-bg": "#FFEDD5",
+    "--accent": "#2563EB",
+    "--bg": "#FFFBF5",
+    "--text": "#1C1917",
+    "--text-2": "#78716C",
+    "--border": "#E7E5E4",
+}
+
+#: 与间距有关的 CSS 属性 —— 这些值必须落在 8pt 网格上
+_SPACING_PROPS = ("padding", "margin", "gap", "row-gap", "column-gap")
+
+_LENGTH_RE = re.compile(r"(\d+(?:\.\d+)?)px")
+
+
+def _css() -> str:
+    from app.web.paths import STATIC_DIR
+
+    return (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+
+
+def test_palette_matches_spec():
+    """⛔ 用户明确指定了配色，改动必须是有意的。"""
+    css = _css()
+    for var, color in REQUIRED_PALETTE.items():
+        # CSS 里的冒号后有对齐用的空格，所以用正则而不是字符串拼接
+        assert re.search(rf"{re.escape(var)}\s*:\s*{color}\b", css, re.IGNORECASE), (
+            f"色板变量 {var} 应为 {color}"
+        )
+
+
+def test_spacing_scale_is_multiples_of_eight():
+    """⛔ 8pt grid：间距标尺的每一档都必须是 8 的倍数。"""
+    css = _css()
+    found = dict(re.findall(r"(--sp-\d+):\s*(\d+)px", css))
+    assert found, "没有找到 --sp-* 间距变量"
+    for name, value in found.items():
+        assert int(value) % 8 == 0, f"{name} = {value}px 不是 8 的倍数"
+
+
+def test_spacing_declarations_snap_to_eight():
+    """⛔ 8pt grid：padding / margin / gap 里的 px 值必须是 8 的倍数。
+
+    例外：0、1px 边框式的细线、以及用 var()/calc() 表达的值。
+    这条测试是刻意严格的 —— 一旦有人随手写 padding: 10px 就会红。
+    """
+    css = _css()
+    # 去掉注释，避免注释里的说明被误判
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+
+    violations: list[str] = []
+    for prop in _SPACING_PROPS:
+        # 匹配 `padding: ...;` / `margin-bottom: ...;` 等
+        pattern = re.compile(
+            rf"(?:^|[;{{\s]){prop}(?:-[a-z]+)?:\s*([^;}}]+);", re.MULTILINE
+        )
+        for match in pattern.finditer(css):
+            value = match.group(1).strip()
+            if "var(" in value or "calc(" in value:
+                continue
+            if value in ("0", "auto", "inherit", "initial", "unset"):
+                continue
+            for number in _LENGTH_RE.findall(value):
+                px = float(number)
+                if px == 0:
+                    continue
+                if px % 8 != 0:
+                    violations.append(f"{prop}: {value.strip()}")
+
+    assert not violations, "以下间距不在 8pt 网格上：\n  " + "\n  ".join(
+        sorted(set(violations))
+    )
+
+
+def test_scroll_spy_helpers_exist():
+    """滚动监听与点击定位的实现在 app.js 里，缺了交互就失效。"""
+    from app.web.paths import STATIC_DIR
+
+    js = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert "wireScrollSpy" in js
+    assert "getBoundingClientRect" in js
+    assert "requestAnimationFrame" in js
+    # 滚到底时要强制高亮最后一项，否则最后一节永远点不亮
+    assert "atBottom" in js
+
+
+def test_smooth_scroll_and_scroll_margin_present():
+    """锚点跳转要平滑，且不能被吸顶栏盖住。"""
+    css = _css()
+    assert "scroll-behavior: smooth" in css
+    assert "scroll-margin-top" in css
+
+
+def test_no_external_resources_in_css_or_js():
+    """离线可用：样式和脚本里不能出现外部 URL。"""
+    from app.web.paths import STATIC_DIR
+
+    for name in ("app.css", "app.js"):
+        text = (STATIC_DIR / name).read_text(encoding="utf-8")
+        assert "http://" not in text.replace("http://127.0.0.1", "")
+        assert "https://" not in text
 
 
 # ===========================================================================
@@ -366,6 +551,31 @@ def test_note_page_escapes_dangerous_body(client, settings):
     _make_note(settings, markdown="# 正文\n\n<script>alert(1)</script>\n")
     res = client.get("/notes/note1")
     assert "<script>alert(1)</script>" not in res.text
+
+
+def test_note_page_renders_left_nav(client, settings):
+    """笔记页要有左侧目录 —— 滚动监听与点击定位都挂在它上面。"""
+    _make_note(settings, markdown="# 正文\n\n## 一句话总结\n\na\n\n## 重点\n\nb\n")
+    html = client.get("/notes/note1").text
+    assert 'class="note-layout"' in html
+    assert 'id="toc"' in html
+    assert 'data-anchor="sec-1"' in html
+    assert 'data-anchor="sec-2"' in html
+    assert "一句话总结" in html
+    assert "重点" in html
+
+
+def test_note_page_toc_titles_match_sections(client, settings):
+    _make_note(settings, markdown="## 🎯 一句话总结\n\na\n\n## 🛠️ 能直接用的东西\n\nb\n")
+    html = client.get("/notes/note1").text
+    assert "🎯 一句话总结" in html
+    assert "🛠️ 能直接用的东西" in html
+
+
+def test_note_page_without_headings_has_no_toc(client, settings):
+    _make_note(settings, markdown="# 只有一个大标题\n\n正文\n")
+    html = client.get("/notes/note1").text
+    assert 'id="toc"' not in html
 
 
 def test_note_page_404_for_unknown(client):

@@ -115,8 +115,35 @@ def sample_note_payload() -> dict[str, Any]:
     """一份合法的笔记 JSON（字段名故意用模型的常见变体）。"""
     return {
         "title": "向量数据库到底解决什么问题",
+        "goal": "能判断自己的场景该不该上向量数据库，以及该选哪类索引。",
         "one_liner": "向量数据库不是银弹，它只解决高维数据的近似最近邻检索。",
         "summary": "视频先给出结论，再解释 ANN 的原理，最后介绍 HNSW 和 IVF 两类索引。",
+        "focusPoints": [
+            {
+                "title": "先确认你的场景是不是「高维相似度检索」",
+                "detail": "如果不是，用传统数据库加索引就够了，上向量库只会增加运维负担。",
+                "timestamp": "00:00",
+            },
+            {
+                "title": "索引选型先看召回率要求，再看数据量",
+                "detail": "HNSW 召回率高但吃内存；IVF 省内存但要调 nprobe。",
+                "timestamp": "08:00",
+            },
+        ],
+        "actionables": [
+            {
+                "kind": "command",
+                "title": "建 HNSW 索引",
+                "content": "CREATE INDEX ON items USING hnsw (embedding vector_cosine_ops);",
+                "note": "向量维度必须与建表时一致。",
+                "timestamp": "08:00",
+            },
+            {
+                "kind": "checklist",
+                "title": "上线前检查",
+                "content": "1. 确认召回率达标\n2. 确认内存余量\n3. 确认有降级方案",
+            },
+        ],
         "outline": [
             {"timestamp": 0, "heading": "开场", "summary": "提出主题"},
             {"timestamp": 8, "heading": "核心原理", "summary": "讲 ANN 的取舍"},

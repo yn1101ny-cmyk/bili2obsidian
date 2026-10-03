@@ -28,12 +28,13 @@ from app.bili.subtitles import (
     normalize_subtitle_url,
     parse_subtitle_body,
     parse_subtitle_tracks,
+    parse_view_points,
     pick_best_track,
 )
 from app.bili.urls import VideoRef
 from app.config import Settings
 from app.errors import BiliApiError, InvalidVideoUrl, NoTranscriptAvailable
-from app.schemas import Transcript, TranscriptSegment, VideoMeta, VideoPage
+from app.schemas import Chapter, Transcript, TranscriptSegment, VideoMeta, VideoPage
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +361,29 @@ class BiliClient:
             total_pages=max(1, len(pages)),
             pages=pages,
         )
+
+    async def get_chapters(self, aid: int, cid: int) -> list[Chapter]:
+        """获取章节（优先 B站 AI 生成的 ``view_points``）。
+
+        走的是 ``player/v2``，和字幕同一个接口 ——
+        缓存键相同，所以**不会多一次网络请求**。
+        实测未登录时字幕拿不到，但章节能拿到。
+
+        失败不致命：拿不到就是空列表，笔记照常生成。
+        """
+        try:
+            data = await self._get_json(
+                _API_PLAYER,
+                params={"aid": aid, "cid": cid},
+                cache_key=f"player:{aid}:{cid}",
+            )
+        except Exception as exc:  # noqa: BLE001 - 章节是锦上添花
+            logger.debug("获取章节失败：%s", exc)
+            return []
+        chapters = parse_view_points(data)
+        if chapters:
+            logger.info("拿到 %d 个章节（B站 AI 划分）", len(chapters))
+        return chapters
 
     async def get_tags(self, bvid: str) -> list[str]:
         """拉取视频标签。失败不致命，返回空列表。"""

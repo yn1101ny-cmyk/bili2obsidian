@@ -85,6 +85,21 @@ class VideoPage(BaseModel):
     duration: int = 0
 
 
+class Chapter(BaseModel):
+    """章节（优先用 B站 AI 生成的 ``view_points``）。
+
+    这是**未登录就能拿到的免费结构化线索** —— 相当于 UP 主或 B站
+    已经替你标好了「这个视频分了哪几块」。用它来推断重点，
+    比让模型从零去猜靠谱得多。
+    """
+
+    title: str
+    start: float = 0.0
+
+    def clock(self) -> str:
+        return format_clock(self.start)
+
+
 class VideoMeta(BaseModel):
     """视频元数据。"""
 
@@ -100,6 +115,8 @@ class VideoMeta(BaseModel):
     cover_url: str = ""
     pubdate: datetime | None = None
     tags: list[str] = Field(default_factory=list)
+    #: 章节（B站 AI 生成的 view_points）
+    chapters: list[Chapter] = Field(default_factory=list)
     #: 当前处理的 cid / 分P序号（从 1 开始）
     cid: int | None = None
     page: int = 1
@@ -183,6 +200,123 @@ class KeyPoint(BaseModel):
         return format_clock(self.timestamp) if self.timestamp is not None else ""
 
 
+class FocusPoint(BaseModel):
+    """视频的重点 —— 读者最该拿走的那几件事。
+
+    与 ``KeyPoint`` 的区别：``KeyPoint`` 是「视频讲了什么」，
+    ``FocusPoint`` 是「**冲着这个标题/目标来的人，必须带走什么**」。
+    它排在最前面、写得最实，因为用户要的就是这个。
+    """
+
+    title: str = Field(description="重点，一句话说到点子上")
+    detail: str = Field(
+        description="展开讲透：具体怎么做、为什么这么做、有什么前提。不要只写结论"
+    )
+    timestamp: float | None = Field(default=None, ge=0.0)
+
+    def clock(self) -> str:
+        return format_clock(self.timestamp) if self.timestamp is not None else ""
+
+
+class ActionableKind(str, Enum):
+    """「能直接用的东西」的类型。"""
+
+    PROMPT = "prompt"        # 提示词，可复制
+    STEP = "step"            # 操作步骤
+    COMMAND = "command"      # 命令 / 代码
+    CONFIG = "config"        # 配置项
+    CHECKLIST = "checklist"  # 检查清单
+    TEMPLATE = "template"    # 模板 / 结构化格式
+    TIP = "tip"              # 经验技巧
+
+    @property
+    def label(self) -> str:
+        return {
+            "prompt": "提示词",
+            "step": "操作步骤",
+            "command": "命令 / 代码",
+            "config": "配置",
+            "checklist": "检查清单",
+            "template": "模板",
+            "tip": "技巧",
+        }[self.value]
+
+    @property
+    def icon(self) -> str:
+        return {
+            "prompt": "💬",
+            "step": "🔢",
+            "command": "⌨️",
+            "config": "⚙️",
+            "checklist": "✅",
+            "template": "📋",
+            "tip": "💡",
+        }[self.value]
+
+
+class Actionable(BaseModel):
+    """能直接拿走就用的东西。
+
+    这是本工具**最有价值的一节**：看完一篇教程，真正想留下来的是
+    「那段提示词怎么写」「那个命令是什么」，而不是对视频的复述。
+    所以这里要求给出**可以原样复制的内容**，而不是描述。
+    """
+
+    kind: ActionableKind = Field(default=ActionableKind.TIP)
+    title: str = Field(description="这是什么，一句话")
+    content: str = Field(
+        description=(
+            "可直接复制使用的内容本身。"
+            "提示词就给完整提示词；命令就给完整命令；步骤就给分步清单。"
+            "**必须是视频里真实出现过的**，没有就填 null 不要自己编。"
+        )
+    )
+    note: str | None = Field(
+        default=None, description="什么时候用、要注意什么；没有就填 null"
+    )
+    timestamp: float | None = Field(default=None, ge=0.0)
+
+    def clock(self) -> str:
+        return format_clock(self.timestamp) if self.timestamp is not None else ""
+
+
+class FocusPlan(BaseModel):
+    """生成笔记前的「先想清楚要什么」这一步的产出。
+
+    实测动机：直接让模型「总结视频」，它会按**时间顺序复述**，
+    产出一篇什么都没漏、但什么重点都没有的笔记 ——
+    用户的原话是「我要的是怎么让 agent 干活、提示词怎么写，但笔记做出来的并不是」。
+
+    所以先生成一份「受众目标 + 应重点抓取什么」，
+    再带着它去组织笔记，让笔记围绕**读者要的东西**展开，
+    而不是围绕视频的讲述顺序。
+    """
+
+    video_kind: str = Field(
+        default="",
+        description="视频类型，如：操作教程 / 工具评测 / 知识解说 / 经验分享 / 访谈对谈",
+    )
+    audience_goal: str = Field(
+        default="",
+        description="冲着这个标题点进来的人，最想得到什么？一句话说清",
+    )
+    focus: list[str] = Field(
+        default_factory=list,
+        description="按重要性排序的 3-6 个关注点，笔记要围绕它们组织",
+    )
+    must_extract: list[str] = Field(
+        default_factory=list,
+        description=(
+            "这类视频里**必须逐字抓下来**的东西，如「提示词原文」「具体命令」"
+            "「参数取值」「操作顺序」。这是最容易被泛泛总结冲掉的部分"
+        ),
+    )
+    ignore: list[str] = Field(
+        default_factory=list,
+        description="可以忽略的内容，如「开场寒暄」「抽奖口播」「与主题无关的闲聊」",
+    )
+
+
 class Concept(BaseModel):
     """关键概念解释 —— 目标是「没看过视频的人也能看懂」。"""
 
@@ -235,11 +369,37 @@ class Uncertainty(BaseModel):
 
 
 class Note(BaseModel):
-    """一份完整的笔记。这是 LLM 结构化输出的目标结构。"""
+    """一份完整的笔记。这是 LLM 结构化输出的目标结构。
+
+    结构顺序就是**阅读优先级**：先说这视频是干什么的（``goal``）、
+    最该拿走的几件事（``focus_points``）、能直接用的东西
+    （``actionables``），最后才是脉络、概念、存疑。
+
+    刻意**不包含转写全文** —— 复述整段音频没有价值，篇幅应该让给重点。
+    转写另有纯文本文件（``vault.write_transcript``），需要核对时再翻。
+    """
 
     title: str = Field(description="笔记标题，可以是更好的概括性标题")
+    goal: str = Field(
+        description="读完这篇你能做到什么。一句话，直接对着读者的目的说"
+    )
     one_liner: str = Field(description="一句话总结：这个视频最核心的结论是什么")
     summary: str = Field(description="3-5 句话的摘要，覆盖全片脉络")
+    focus_points: list[FocusPoint] = Field(
+        default_factory=list,
+        description=(
+            "**最重要的一节**：冲着这个视频标题来的人，必须带走的 3-6 件事。"
+            "每条都要讲透具体怎么做，不要写「介绍了 XX」这种空话"
+        ),
+    )
+    actionables: list[Actionable] = Field(
+        default_factory=list,
+        description=(
+            "能直接复制使用的东西：提示词原文、命令、操作步骤、配置、清单。"
+            "**这是本笔记最有价值的部分** —— 视频里出现过的提示词/命令/参数"
+            "要逐字抓下来。完全找不到就留空，不要编"
+        ),
+    )
     outline: list[OutlineItem] = Field(default_factory=list)
     key_points: list[KeyPoint] = Field(default_factory=list)
     concepts: list[Concept] = Field(default_factory=list)
@@ -256,6 +416,14 @@ class Note(BaseModel):
     def is_thin(self) -> bool:
         """笔记是否信息量不足（用于自检并重试）。"""
         return not self.key_points and not self.summary.strip()
+
+    def has_substance(self) -> bool:
+        """是否有实质内容：至少要有重点或行动项之一。
+
+        比 ``is_thin`` 更严 —— 实测模型会产出一堆「介绍了…」「提到了…」
+        的复述式要点，看着不空，但读者拿不走任何东西。
+        """
+        return bool(self.focus_points) or bool(self.actionables)
 
 
 # ---------------------------------------------------------------------------

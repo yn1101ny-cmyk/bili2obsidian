@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from app.bili.urls import parse_video_input
 from app.errors import InvalidVideoUrl
 from app.schemas import JobStage, NoteRecord
-from app.web.markdown_render import render_markdown, strip_frontmatter
+from app.web.markdown_render import render_note_body
 from app.web.paths import TEMPLATES_DIR
 
 logger = logging.getLogger(__name__)
@@ -110,13 +110,17 @@ def build_router() -> APIRouter:  # noqa: C901 - 路由集中在一处更好读
                 detail=f"笔记文件已不存在：{record.markdown_path}",
             )
 
+        # 正文 + 目录（左侧导航靠它渲染，滚动监听靠锚点）
+        body_html, toc = render_note_body(markdown)
+
         return templates.TemplateResponse(
             request=request,
             name="note.html",
             context={
                 "settings": request.app.state.settings,
                 "record": record,
-                "body_html": render_markdown(strip_frontmatter(markdown)),
+                "body_html": body_html,
+                "toc": toc,
             },
         )
 

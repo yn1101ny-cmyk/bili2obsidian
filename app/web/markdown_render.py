@@ -116,3 +116,59 @@ def strip_frontmatter(text: str) -> str:
     if end == -1:
         return text
     return text[end + 4 :].lstrip("\n")
+
+
+# ---------------------------------------------------------------------------
+# 目录（左侧导航用）
+# ---------------------------------------------------------------------------
+
+_H2_RE = re.compile(r"<h2(\s[^>]*)?>(.*?)</h2>", re.DOTALL | re.IGNORECASE)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+#: 目录项用的短标题长度上限
+_TOC_TITLE_LIMIT = 20
+
+
+def add_heading_anchors(rendered: str) -> tuple[str, list[dict[str, str]]]:
+    """给渲染结果里的 ``<h2>`` 加上锚点 id，并返回目录。
+
+    左侧导航 + 滚动监听需要「段落可寻址」。
+    因为我们完全控制笔记的 Markdown 结构（小节一律用 ``##``），
+    所以直接对 ``<h2>`` 做处理是可靠的。
+
+    :returns: ``(替换后的 HTML, [{"id", "title"}, ...])``
+    """
+    toc: list[dict[str, str]] = []
+    counter = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal counter
+        counter += 1
+        anchor = f"sec-{counter}"
+        inner = match.group(2)
+
+        # 目录里显示纯文本（去掉可能的标签），并且要反转义 ——
+        # 模板会再做一次转义，不反转义会出现 &amp;amp; 这种双重转义
+        title = html.unescape(_TAG_RE.sub("", inner)).strip()
+        if len(title) > _TOC_TITLE_LIMIT:
+            title = title[: _TOC_TITLE_LIMIT - 1] + "…"
+        toc.append({"id": anchor, "title": title})
+
+        return f'<h2 id="{anchor}">{inner}</h2>'
+
+    return _H2_RE.sub(replace, rendered), toc
+
+
+def render_note_body(markdown: str) -> tuple[str, list[dict[str, str]]]:
+    """笔记正文一步到位：去 frontmatter → 转安全 HTML → 加锚点 + 目录。"""
+    body = render_markdown(strip_frontmatter(markdown))
+    return add_heading_anchors(body)
+
+
+__all__ = [
+    "render_markdown",
+    "render_note_body",
+    "add_heading_anchors",
+    "strip_frontmatter",
+    "safe_url",
+]
