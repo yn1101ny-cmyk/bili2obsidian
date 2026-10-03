@@ -19,6 +19,7 @@ from app.notes.pipeline import (
     _note_needs_retry,
     _outline_timestamps_bad,
     coerce_actionable_kind,
+    strip_label_prefix,
     to_note,
     to_partial_notes,
 )
@@ -260,6 +261,70 @@ def test_to_note_accepts_null_timestamps():
 )
 def test_coerce_actionable_kind(value, expected):
     assert coerce_actionable_kind(value) is expected
+
+
+# ---------------------------------------------------------------------------
+# 剥掉模型硬加的「标题：」前缀
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content,title,expected",
+    [
+        ("验证Git状态：git status", "验证Git状态", "git status"),
+        ("验证Git状态: git status", "验证Git状态", "git status"),
+        ("验证Git状态 - git status", "验证Git状态", "git status"),
+        # 标题大小写/空格不同也要能剥
+        ("git 状态：git status", "Git状态", "git status"),
+        # 没有前缀就原样保留
+        ("git status", "验证Git状态", "git status"),
+    ],
+)
+def test_strip_label_prefix_removes_duplicate_title(content, title, expected):
+    assert strip_label_prefix(content, title) == expected
+
+
+def test_strip_label_prefix_keeps_real_colon_in_prompt():
+    """⛔ 回归守卫：提示词正文里的冒号不能动。
+
+    「请按以下格式输出：…」这种前缀是内容的一部分，
+    见冒号就切会把有用的东西切掉。
+    """
+    prompt = (
+        "你是一个专业的助手，请按以下格式输出：\n"
+        "1. 结论\n2. 理由"
+    )
+    assert strip_label_prefix(prompt, "写作提示词") == prompt
+
+
+def test_strip_label_prefix_never_empties_content():
+    assert strip_label_prefix("标题：", "标题") == "标题："
+    assert strip_label_prefix("标题：   ", "标题") == "标题：   "
+
+
+def test_strip_label_prefix_ignores_long_prefix():
+    """超过 40 字的「标题」其实是正文，不要当标签剥掉。"""
+    long_head = "这是一段非常长的说明文字用来充当正文内容所以不应该被当作标题剥离掉"
+    content = f"{long_head}：后面的内容"
+    assert strip_label_prefix(content, "别的标题") == content
+
+
+def test_strip_label_prefix_handles_empty():
+    assert strip_label_prefix("", "标题") == ""
+    assert strip_label_prefix("内容", "") == "内容"
+
+
+def test_to_note_strips_prefix_end_to_end():
+    """端到端：模型输出带前缀时，最终 content 应当是可直接复制的原文。"""
+    raw = {
+        "title": "t",
+        "actionables": [
+            {"kind": "command", "title": "验证Git状态", "content": "验证Git状态：git status"}
+        ],
+    }
+    note = to_note(raw)
+    assert note.actionables[0].content == "git status"
+    assert note.actionables[0].title == "验证Git状态"
 
 
 # ---------------------------------------------------------------------------
