@@ -72,16 +72,26 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     whisper_model: str = "large-v3-turbo"
     whisper_device: Literal["auto", "cuda", "cpu"] = "auto"
+    #: 计算精度。
+    #: ⚠️ **不要用 auto**：auto 会选 int8，而 Blackwell(RTX 50系, sm_120)
+    #: 上 int8 路径极易抛 CUBLAS_STATUS_NOT_SUPPORTED。
+    #: GPU 请显式用 float16；CPU 用 int8。
     whisper_compute_type: Literal[
         "auto", "float16", "int8_float16", "int8", "float32"
-    ] = "auto"
-    #: 转写语言；zh 为中文。留空则自动检测。
+    ] = "float16"
+    #: 转写语言；zh 为中文。留空则自动检测（偶尔会误判成粤语/日语，不建议留空）。
     whisper_language: str = "zh"
-    #: 中文强制简体（faster-whisper 常输出繁体）
+    #: 中文强制简体。faster-whisper 常输出繁体，
+    #: OpenCC(t2s) 是确定性兜底，提示词只能引导不能保证。
     whisper_simplify_chinese: bool = True
     whisper_beam_size: int = Field(default=5, ge=1, le=10)
-    #: 传给模型的提示词，用于统一术语与标点风格
-    whisper_initial_prompt: str = "以下是普通话内容，请使用简体中文并加上标点。"
+    #: 批处理推理，可提速 3-5 倍
+    whisper_use_batched: bool = True
+    whisper_batch_size: int = Field(default=8, ge=1, le=64)
+    #: 传给模型的提示词。
+    #: ⚠️ 必须是**完整通顺的简体句子** —— 实测单词/短语（如「听起来有点呆」）
+    #: 完全无效，写法不规范还可能把模型带偏。
+    whisper_initial_prompt: str = "以下是普通话的句子，这是一段中文讲解录音。"
 
     # ------------------------------------------------------------------
     # 语言模型（默认本地 Ollama）

@@ -1,0 +1,20 @@
+# Windows + NVIDIA GPU 的 CUDA 运行库
+#
+# 安装：.venv\Scripts\python.exe -m pip install -r requirements-cuda.txt
+#
+# 为什么需要这些：CTranslate2（faster-whisper 的推理后端）在 Windows 上
+# 不会自动找到 CUDA 运行库，必须 pip 装到 site-packages 里，
+# 再由 app/asr/whisper_engine.py 的 setup_cuda_dll_paths() 注册进 DLL 搜索路径。
+#
+# 版本约束的由来（实证结论，详见 docs/research/blackwell-whisper.md）：
+#
+#   * 必须 CUDA 12.x —— CTranslate2 目前**不支持 CUDA 13**
+#   * 必须 cuDNN 9 —— 从 CTranslate2 4.5.0 起不再兼容 cuDNN 8
+#     （注意：opennmt.net 官方安装文档至今仍写 "cuDNN 8"，是过时内容）
+#   * 必须 >= 12.8 —— CUDA 12.8 是 NVIDIA 官方第一个支持 Blackwell 的 toolkit；
+#     更早的 cuBLAS 在 sm_120 上缺 kernel
+
+nvidia-cublas-cu12>=12.8.4.1
+nvidia-cudnn-cu12>=9.8,<10
+nvidia-cuda-runtime-cu12>=12.8
+nvidia-cuda-nvrtc-cu12>=12.8

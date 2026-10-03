@@ -45,14 +45,20 @@ _API_FINGER = "https://api.bilibili.com/x/frontend/finger/spi"
 
 #: B站业务错误码 -> 人话
 _CODE_HINTS: dict[int, str] = {
+    -101: "账号未登录（SESSDATA 缺失或已失效，需要重新获取）",
     -400: "请求参数错误",
     -403: "访问权限不足（可能需要登录，或该视频有观看限制）",
     -404: "视频不存在或已被删除",
-    -412: "触发风控被拦截（请求过频或缺少必要请求头）",
+    -412: "触发风控被拦截（请求过频或行为异常）",
     -509: "请求过于频繁，已被限流，请稍后再试",
+    # -352 是 B站明确的限流信号，yt-dlp 源码中把它当作「稍后重试」处理
+    -352: "请求被限流（-352），需要退避后重试",
     62002: "视频不可见（可能已删除或设为私密）",
     62004: "稿件审核中，暂时无法访问",
 }
+
+#: 遇到这些错误码应当退避重试（而不是直接失败）
+_RETRYABLE_CODES = frozenset({-352, -412, -509, -799})
 
 
 class BiliClient:
@@ -216,7 +222,28 @@ class BiliClient:
             if code != 0 and code not in allow_codes:
                 hint = _CODE_HINTS.get(code, "")
                 msg = data.get("message") or data.get("msg") or ""
-                raise BiliApiError(url, code, f"{msg} {hint}".strip())
+                detail = f"{msg} {hint}".strip()
+
+                # -352 / -412 / -509 这类是限流或风控，退避重试而不是直接失败
+                if code in _RETRYABLE_CODES and attempt < self.settings.bili_max_retries:
+                    wait = 2.0 * (2**attempt)  # 2s, 4s, 8s
+                    logger.warning(
+                        "B站返回 %s（%s），%.0fs 后重试（第 %d/%d 次）",
+                        code,
+                        detail,
+                        wait,
+                        attempt + 1,
+                        self.settings.bili_max_retries,
+                    )
+                    last_error = BiliApiError(url, code, detail)
+                    if code in (-412, -509):
+                        # 风控类：刷新设备指纹再试
+                        self._buvid = None
+                        await self._ensure_buvid(force=True)
+                    await asyncio.sleep(wait)
+                    continue
+
+                raise BiliApiError(url, code, detail)
 
             if use_cache and cache_key:
                 self._cache_write(cache_key, data)

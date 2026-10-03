@@ -121,8 +121,13 @@ class VideoMeta(BaseModel):
         return base
 
     def timestamped_url(self, seconds: float) -> str:
-        """生成可跳转到指定时间点的链接。"""
-        return f"{self.url}&t={int(seconds)}"
+        """生成可跳转到指定时间点的链接。
+
+        单P视频的 URL 没有查询串，必须用 ``?`` 起头；多P的 URL 已含 ``?p=N``，
+        只能用 ``&`` 追加。搞错会生成 ``...BVxxx&t=90`` 这种非法链接。
+        """
+        sep = "&" if "?" in self.url else "?"
+        return f"{self.url}{sep}t={int(seconds)}"
 
 
 class Transcript(BaseModel):

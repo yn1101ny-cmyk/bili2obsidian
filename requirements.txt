@@ -1,5 +1,9 @@
 # MyNoteApp 运行时依赖
 # 安装：.venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# 有 NVIDIA 显卡（Windows）想用 GPU 转写，再装：
+#   .venv\Scripts\python.exe -m pip install -r requirements-cuda.txt
+# 纯 CPU 环境**不需要**安装 CUDA 依赖（那会多下载约 750MB）。
 
 # --- Web 层（仅监听 127.0.0.1）---
 fastapi>=0.115
@@ -17,8 +21,13 @@ httpx>=0.27
 yt-dlp>=2024.12.13
 
 # --- 本地语音转写 ---
-faster-whisper>=1.1.0
+faster-whisper>=1.2.1
+#: ⚠️ 4.6.3 是首个用 CUDA 12.8 构建的版本，也是首个真正支持
+#: Blackwell(RTX 50 系, sm_120) 的版本。低于它会报 no kernel image。
+ctranslate2>=4.6.3
 imageio-ffmpeg>=0.5.1
+#: Whisper 中文常输出繁体，OpenCC 的 t2s 是确定性兜底
+opencc-python-reimplemented>=0.1.7
 
 # --- 测试 ---
 pytest>=8.3
