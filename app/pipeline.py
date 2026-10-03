@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -222,23 +223,37 @@ class NotePipeline:
 
         check_cancel()
 
+        # ---------------- 3.5 画面文字（OCR）----------------
+        # 「不单纯分析音频」：教程类视频的提示词、代码、命令往往
+        # **只出现在画面上**，音频里听不到或者听错。
+        on_screen = await self._obtain_on_screen(
+            meta,
+            transcript,
+            report=report,
+            check_cancel=check_cancel,
+            notices=notices,
+        )
+
+        check_cancel()
+
         # 无论转写来自缓存还是刚刚生成，都统一合并一次碎句再喂给模型。
         # 放在使用点而不是只放在保存点，是为了让改动前存下的旧缓存
         # 也能享受到同样的处理（merge_for_notes 是幂等的）。
         transcript = merge_for_notes(transcript, repeat_min_run=self.settings.whisper_repeat_min_run)
 
         # ---------------- 4. 生成笔记 ----------------
-        report(JobStage.SUMMARIZING, 0.62, "正在加载本地模型…")
+        report(JobStage.SUMMARIZING, 0.72, "正在加载本地模型…")
         provider = build_provider(self.settings)
         try:
             generator = NoteGenerator(provider, self.settings)
             note = await generator.generate(
                 transcript,
                 meta,
+                on_screen=on_screen,
                 on_progress=lambda frac, msg: (
                     check_cancel(),
                     report(
-                        JobStage.SUMMARIZING, 0.62 + 0.33 * frac, msg
+                        JobStage.SUMMARIZING, 0.72 + 0.24 * frac, msg
                     ),
                 )[1],
             )
@@ -337,7 +352,9 @@ class NotePipeline:
         if meta.aid is not None and cid:
             transcript = await bili.try_get_subtitle(meta.aid, cid)
             if transcript is not None and not transcript.is_empty():
-                transcript = merge_for_notes(transcript, repeat_min_run=self.settings.whisper_repeat_min_run)
+                transcript = merge_for_notes(
+                    transcript, repeat_min_run=self.settings.whisper_repeat_min_run
+                )
                 self.db.save_transcript(meta.bvid, page, cid, transcript)
                 notices.append(
                     f"✅ 直接使用了 B站的字幕（{transcript.source.label}），未做语音转写。"
@@ -392,6 +409,126 @@ class NotePipeline:
         notices.append(f"🎧 已用本地 Whisper 转写完成（{transcript.note}）。")
         self.db.save_transcript(meta.bvid, page, cid, transcript)
         return transcript
+
+    # ------------------------------------------------------------------
+    # 画面文字（OCR）
+    # ------------------------------------------------------------------
+
+    def _vision_cache_path(self, bvid: str, page: int) -> Path:
+        return self.settings.cache_dir / "vision" / f"{bvid}_p{page}.json"
+
+    def _read_vision_cache(self, path: Path) -> list[tuple[float, str]] | None:
+        """读画面文字缓存。缓存的有效性不设 TTL —— 视频内容不会变。"""
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(raw, list):
+            return None
+        out: list[tuple[float, str]] = []
+        for item in raw:
+            if isinstance(item, list) and len(item) == 2:
+                try:
+                    out.append((float(item[0]), str(item[1])))
+                except (TypeError, ValueError):
+                    continue
+        return out or None
+
+    def _write_vision_cache(
+        self, path: Path, blocks: list[tuple[float, str]]
+    ) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(blocks, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.debug("写画面文字缓存失败：%s", exc)
+
+    async def _obtain_on_screen(
+        self,
+        meta: VideoMeta,
+        transcript: Transcript,
+        *,
+        report: StageCb,
+        check_cancel: Callable[[], None],
+        notices: list[str],
+    ) -> list[tuple[float, str]]:
+        """下载低清视频 → 抽帧 → OCR，拿到画面上的文字。
+
+        **失败一律降级为空列表**，绝不因为 OCR 出问题就让整篇笔记生不出来。
+        """
+        if not self.settings.vision_enabled:
+            return []
+
+        from app.vision.ocr import OcrEngine, is_available
+
+        ok, reason = is_available()
+        if not ok:
+            notices.append(f"ℹ️ 已跳过画面识别：{reason}")
+            return []
+
+        cache_path = self._vision_cache_path(meta.bvid, meta.page)
+        cached = self._read_vision_cache(cache_path)
+        if cached is not None:
+            notices.append(f"♻️ 复用了已缓存的画面文字（{len(cached)} 段）")
+            return cached
+
+        try:
+            report(JobStage.VISION, 0.56, "正在下载低清视频（用于识别画面）…")
+            downloader = AudioDownloader(self.settings)
+            video = await downloader.download_video(
+                url=meta.url,
+                bvid=meta.bvid,
+                page=meta.page,
+                title=meta.part_title or meta.title,
+                max_height=self.settings.vision_max_height,
+                on_progress=lambda f, m: report(
+                    JobStage.VISION, 0.56 + 0.04 * f, m
+                ),
+            )
+            check_cancel()
+
+            from app.vision.pipeline import extract_on_screen_text
+
+            def on_prog(frac: float, msg: str) -> None:
+                check_cancel()
+                report(JobStage.VISION, 0.60 + 0.12 * frac, msg)
+
+            work_dir = (
+                self.settings.cache_dir / "vision" / f"{meta.bvid}_p{meta.page}"
+            )
+            blocks = await asyncio.to_thread(
+                extract_on_screen_text,
+                video,
+                work_dir=work_dir,
+                transcript_text=transcript_to_text(transcript.segments),
+                interval=self.settings.vision_interval,
+                max_frames=self.settings.vision_max_frames,
+                engine=OcrEngine(threads=self.settings.vision_ocr_threads),
+                on_progress=on_prog,
+            )
+        except Exception as exc:  # noqa: BLE001 - 画面识别是增强项
+            logger.warning("画面识别失败（不影响笔记生成）：%s", exc)
+            notices.append(f"⚠️ 画面识别失败，本次只依据音频内容：{exc}")
+            return []
+
+        blocks = [b for b in blocks if b.lines]
+        total_lines = sum(len(b.lines) for b in blocks)
+        if total_lines < self.settings.vision_min_lines:
+            notices.append(
+                f"ℹ️ 画面上文字很少（{total_lines} 行），未纳入笔记"
+            )
+            return []
+
+        result = [(b.timestamp, b.render()) for b in blocks]
+        notices.append(
+            f"👁️ 从画面识别出 {total_lines} 行文字（{len(result)} 段）"
+        )
+        self._write_vision_cache(cache_path, result)
+        return result
 
     # ------------------------------------------------------------------
     def unload_models(self) -> None:

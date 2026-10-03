@@ -29,10 +29,11 @@ from app.console import enable_utf8_output  # noqa: E402
 PROBE_BVID = "BV1GJ411x7h7"
 
 OK = "ok"
+INFO = "info"
 WARN = "warn"
 FAIL = "fail"
 
-_MARK = {OK: "✅", WARN: "⚠️ ", FAIL: "❌"}
+_MARK = {OK: "✅", INFO: "ℹ️ ", WARN: "⚠️ ", FAIL: "❌"}
 
 
 @dataclass
@@ -212,6 +213,60 @@ def check_ffmpeg() -> Check:
         "主流程不需要它（只下音频流，用 PyAV 解码）。"
         "仅当需要转码时才有用，可 pip install imageio-ffmpeg。",
     )
+
+
+def check_vision(settings: Settings) -> Check:
+    """检查画面文字识别（OCR）是否可用。
+
+    这一步让笔记能看到**屏幕上写的东西** —— 教程类视频的提示词、
+    代码、命令往往只出现在画面里，音频听不到或者会听错
+    （实测把 ``git init`` 听成 ``Gate``）。
+    """
+    from app.vision.ocr import is_available, suggested_threads
+
+    if not settings.vision_enabled:
+        return Check(
+            "画面识别",
+            INFO,
+            "已在配置中关闭",
+            "如需识别屏幕上的文字，把 VISION_ENABLED 设为 true。",
+        )
+
+    ok, detail = is_available()
+    if not ok:
+        return Check(
+            "画面识别",
+            WARN,
+            "未启用（不影响主流程）",
+            "装上就能看到画面上的提示词/代码/命令：pip install rapidocr",
+        )
+
+    return Check(
+        "画面识别",
+        OK,
+        f"{detail} ｜ OCR 线程 {suggested_threads()} ｜ "
+        f"每 {settings.vision_interval:.0f}s 抽一帧，最多 {settings.vision_max_frames} 帧",
+    )
+
+
+def check_curl_cffi() -> Check:
+    """检查 B站 下载用的浏览器指纹库。
+
+    不带指纹时 B站 可能直接返回 412；但实测即使装了它，
+    是否启用 ``impersonate`` 也要试 —— 所以下载逻辑是「先默认、失败再回退」。
+    """
+    try:
+        import curl_cffi  # noqa: F401
+    except ImportError:
+        return Check(
+            "curl_cffi",
+            WARN,
+            "未安装",
+            "下载低清视频（画面识别用）时 B站 可能返回 412。"
+            "建议：pip install curl-cffi",
+        )
+    version = getattr(curl_cffi, "__version__", "?")
+    return Check("curl_cffi", OK, f"{version}（提供浏览器指纹，降低被 B站 拦截的概率）")
 
 
 def check_hf_endpoint(settings: Settings) -> Check:
@@ -401,7 +456,9 @@ async def run_checks(settings: Settings, *, offline: bool) -> Report:
     report.add(check_opencc())
     report.add(check_hf_endpoint(settings))
     report.add(check_ytdlp())
+    report.add(check_curl_cffi())
     report.add(check_ffmpeg())
+    report.add(check_vision(settings))
 
     report.add(check_llm_config(settings))
     report.add(check_vault(settings))

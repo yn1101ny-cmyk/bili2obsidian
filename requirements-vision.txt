@@ -1,0 +1,26 @@
+# 画面识别（可选）—— 让笔记能看到屏幕上的文字
+#
+# 装了这个之后，教程类视频里**只出现在画面上**的提示词、代码、命令
+# 也能被记进笔记。实测某 AI 编程教程：音频把 `git status` 听成了
+# `Gate status`，而画面识别给出了正确的原文，还多挖出了
+# 音频里从未念过的 `git diff --check`。
+#
+# 不装也能用，只是笔记只看得到音频内容。
+#
+#     pip install -r requirements-vision.txt
+#
+# 特点：
+#   * 模型（约 36MB）**打包在 wheel 里**，运行时**零网络请求** —— 隐私红线不受影响
+#   * 纯 Python wheel，无需编译器
+#   * 实测把代理指向死端口仍正常工作
+
+# OCR 引擎。⚠️ 必须是新版 `rapidocr`；
+# 旧的 `rapidocr-onnxruntime` 声明 Requires-Python <3.13，在 3.13 上装不了。
+rapidocr>=3.9.2
+
+# 推理后端（CPU 即可 —— GPU 需要 CUDA 13 + cuDNN 9，要额外下 1.26GB 依赖，
+# 只为省一两分钟，不划算）
+onnxruntime>=1.20
+
+# B站 下载时提供浏览器指纹，降低被 412 拦截的概率
+curl-cffi>=0.7

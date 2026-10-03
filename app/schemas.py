@@ -437,6 +437,7 @@ class JobStage(str, Enum):
     FETCHING_SUBS = "fetching_subs"
     DOWNLOADING = "downloading"  # 下载音频
     TRANSCRIBING = "transcribing"
+    VISION = "vision"            # 抽帧 + OCR 识别画面文字
     SUMMARIZING = "summarizing"
     RENDERING = "rendering"
     DONE = "done"
@@ -451,6 +452,7 @@ class JobStage(str, Enum):
             "fetching_subs": "获取字幕",
             "downloading": "下载音频",
             "transcribing": "语音转写",
+            "vision": "识别画面文字",
             "summarizing": "生成笔记",
             "rendering": "渲染保存",
             "done": "完成",

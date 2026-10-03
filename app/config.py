@@ -115,6 +115,28 @@ class Settings(BaseSettings):
     hf_disable_xet: bool = True
 
     # ------------------------------------------------------------------
+    # 画面识别（OCR）—— 「不单纯分析音频」
+    # ------------------------------------------------------------------
+    #: 是否识别画面上的文字。
+    #:
+    #: 教程类视频里提示词、代码、终端输出往往**只出现在画面上**，
+    #: 光靠音频转写会全部丢失（实测把 git 听成了 Gate）。
+    #: 需要 pip install rapidocr（模型随包提供，完全离线）。
+    vision_enabled: bool = True
+    #: 抽帧间隔（秒）。太长会漏内容，太短会很慢。
+    vision_interval: float = Field(default=15.0, ge=2.0, le=120.0)
+    #: 单次最多抽多少帧（长视频会自动放宽间隔）
+    vision_max_frames: int = Field(default=240, ge=10, le=2000)
+    #: 下载视频时限制的高度。抽帧做 OCR 用 480p 足够。
+    vision_max_height: int = Field(default=480, ge=144, le=1080)
+    #: OCR 线程数。
+    #: ⚠️ 不要用满逻辑核 —— 实测混合架构 CPU 上用满 24 线程比用 8 线程慢 3.5 倍。
+    #: 留空则自动取逻辑核的一半（夹在 4~12）。
+    vision_ocr_threads: int | None = Field(default=None, ge=1, le=64)
+    #: 画面文字少于这么多行时，就不塞进笔记提示词（避免噪音）
+    vision_min_lines: int = Field(default=3, ge=0, le=100)
+
+    # ------------------------------------------------------------------
     # 语言模型（默认本地 Ollama）
     # ------------------------------------------------------------------
     llm_provider: Literal["ollama", "openai", "none"] = "ollama"

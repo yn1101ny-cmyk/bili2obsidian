@@ -926,3 +926,95 @@ def test_split_by_budget_single_oversized_item_is_its_own_group(settings, meta):
 def test_reduce_budget_leaves_room_for_output(settings):
     gen = NoteGenerator(FakeProvider([]), settings)
     assert gen._reduce_budget < settings.llm_num_ctx
+
+
+# ---------------------------------------------------------------------------
+# 画面文字：按时间切片
+# ---------------------------------------------------------------------------
+
+
+def test_slice_screen_picks_only_matching_range():
+    """⛔ 画面文字必须按时间切片给对应的分段。
+
+    整段画面文字可能上万字，全塞给每一块既浪费上下文，
+    又会让模型分不清「这一块到底讲了什么」。
+    """
+    from app.notes.pipeline import slice_screen
+
+    blocks = [
+        (0.0, "[00:00] 画面：开场"),
+        (100.0, "[01:40] 画面：git init"),
+        (500.0, "[08:20] 画面：结尾"),
+    ]
+    text = slice_screen(blocks, 90.0, 200.0)
+    assert "git init" in text
+    assert "开场" not in text
+    assert "结尾" not in text
+
+
+def test_slice_screen_empty_when_no_overlap():
+    from app.notes.pipeline import slice_screen
+
+    assert slice_screen([(0.0, "a")], 500.0, 600.0) == ""
+
+
+def test_slice_screen_truncates():
+    from app.notes.pipeline import slice_screen
+
+    blocks = [(10.0, "字" * 5000)]
+    text = slice_screen(blocks, 0.0, 100.0, max_chars=100)
+    assert "已截断" in text
+    assert len(text) < 300
+
+
+def test_render_screen_all_joins_blocks():
+    from app.notes.pipeline import render_screen_all
+
+    text = render_screen_all([(0.0, "第一段"), (100.0, "第二段")])
+    assert "第一段" in text and "第二段" in text
+
+
+def test_render_screen_all_empty():
+    from app.notes.pipeline import render_screen_all
+
+    assert render_screen_all([]) == ""
+
+
+async def test_generator_passes_screen_text_to_prompt(
+    settings, sample_transcript, sample_note_payload, meta
+):
+    """画面文字要真的进提示词 —— 这是「不单纯分析音频」的落点。"""
+    provider = SchemaAwareProvider(note=sample_note_payload)
+    await NoteGenerator(provider, settings).generate(
+        sample_transcript,
+        meta,
+        on_screen=[(0.0, "[00:00] 画面内容：\n  git init\n  git commit")],
+    )
+    note_prompt = next(c for c in provider.calls if "音频转写开始" in c or "转写开始" in c)
+    assert "git init" in note_prompt
+    assert "画面上的文字" in note_prompt or "画面内容" in note_prompt
+
+
+async def test_generator_without_screen_text_still_works(
+    settings, sample_transcript, sample_note_payload, meta
+):
+    provider = SchemaAwareProvider(note=sample_note_payload)
+    note = await NoteGenerator(provider, settings).generate(sample_transcript, meta)
+    assert note.title
+
+
+def test_screen_section_warns_it_is_more_accurate():
+    """画面文字比音频转写准（不受同音字影响），提示词要说清楚。"""
+    from app.notes.prompts import build_screen_section
+
+    section = build_screen_section("git init")
+    assert "git init" in section
+    assert "音频里没有" in section or "屏幕" in section
+    assert "优先采用" in section
+
+
+def test_screen_section_empty_for_blank():
+    from app.notes.prompts import build_screen_section
+
+    assert build_screen_section("") == ""
+    assert build_screen_section("   ") == ""
