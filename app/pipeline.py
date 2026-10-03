@@ -24,6 +24,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from app.asr.cleanup import clean_segments
 from app.asr.whisper_engine import WhisperEngine, build_hotwords
 from app.bili.client import BiliClient
 from app.bili.subtitles import merge_adjacent_segments
@@ -70,14 +71,34 @@ class Cancelled(MyNoteError):
     """用户主动取消了任务。"""
 
 
-def merge_for_notes(transcript: Transcript) -> Transcript:
-    """把碎句合并成可读段落，供笔记生成使用。
+def merge_for_notes(transcript: Transcript, *, repeat_min_run: int = 6) -> Transcript:
+    """把转写整理成适合喂给模型的形式：**先清洗复读，再合并碎句**。
 
-    B站 AI 字幕和 Whisper 都会产出很短的片段（几个字一条）。
-    直接喂给模型会导致语义割裂、浪费上下文窗口；
-    合并后模型看到的是完整句子，写出的要点明显更连贯。
-    时间戳保留每段的首句，定位依然准确。
+    分两步，顺序不能反：
+
+    1. **清洗复读幻觉**。长视频里 Whisper 会整段重复同一个字
+       （``替替替替…``）或同一个词（``余帽余帽…``）。这些垃圾会被模型
+       当成内容去总结，必须在合并之前先丢掉 —— 否则合并会把它们
+       和正常内容粘在一起，更难清理。
+
+    2. **合并碎句**。Whisper 与 B站 AI 字幕都产出几个字一条的碎片，
+       直接喂给模型会导致语义割裂、浪费上下文窗口。
+       时间戳保留每段的首句，定位依然准确。
+
+    这个函数是**幂等**的，所以可以同时放在「保存前」和「使用前」，
+    让改动之前存下的旧缓存也能享受到同样的处理。
     """
+    if not transcript.segments:
+        return transcript
+
+    # ---- 1. 清洗复读 ----
+    cleaned, dropped, rewritten = clean_segments(
+        transcript.segments, min_run=repeat_min_run
+    )
+    if dropped or rewritten:
+        transcript = transcript.model_copy(update={"segments": cleaned})
+
+    # ---- 2. 合并碎句 ----
     if len(transcript.segments) < 2:
         return transcript
     merged = merge_adjacent_segments(transcript.segments)
@@ -172,7 +193,7 @@ class NotePipeline:
         # 无论转写来自缓存还是刚刚生成，都统一合并一次碎句再喂给模型。
         # 放在使用点而不是只放在保存点，是为了让改动前存下的旧缓存
         # 也能享受到同样的处理（merge_for_notes 是幂等的）。
-        transcript = merge_for_notes(transcript)
+        transcript = merge_for_notes(transcript, repeat_min_run=self.settings.whisper_repeat_min_run)
 
         # ---------------- 4. 生成笔记 ----------------
         report(JobStage.SUMMARIZING, 0.62, "正在加载本地模型…")
@@ -282,7 +303,7 @@ class NotePipeline:
         if meta.aid is not None and cid:
             transcript = await bili.try_get_subtitle(meta.aid, cid)
             if transcript is not None and not transcript.is_empty():
-                transcript = merge_for_notes(transcript)
+                transcript = merge_for_notes(transcript, repeat_min_run=self.settings.whisper_repeat_min_run)
                 self.db.save_transcript(meta.bvid, page, cid, transcript)
                 notices.append(
                     f"✅ 直接使用了 B站的字幕（{transcript.source.label}），未做语音转写。"
@@ -333,7 +354,7 @@ class NotePipeline:
                 "转写结果为空：可能是纯音乐视频或无人声内容。"
             )
 
-        transcript = merge_for_notes(transcript)
+        transcript = merge_for_notes(transcript, repeat_min_run=self.settings.whisper_repeat_min_run)
         notices.append(f"🎧 已用本地 Whisper 转写完成（{transcript.note}）。")
         self.db.save_transcript(meta.bvid, page, cid, transcript)
         return transcript

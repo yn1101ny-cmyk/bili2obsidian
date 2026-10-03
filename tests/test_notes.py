@@ -682,6 +682,108 @@ async def test_map_reduce_raises_when_nothing_extracted(settings, meta):
     assert "没有抽取" in str(exc.value) or "有效信息" in str(exc.value)
 
 
+# ---------------------------------------------------------------------------
+# 汇总提示词的体量控制
+# ---------------------------------------------------------------------------
+
+
+def _fat_partial(i: int) -> dict:
+    """造一个体量可观的中间结果（模拟长视频里真实的分段产出）。"""
+    return {
+        "outline": [
+            {"timestamp": 0, "heading": f"章节{j}", "summary": "描" * 120}
+            for j in range(6)
+        ],
+        "key_points": [
+            {"title": f"要点{j}", "detail": "细" * 120, "source": "video"}
+            for j in range(6)
+        ],
+        "concepts": [
+            {"term": f"术语{j}", "explanation": "解" * 120} for j in range(4)
+        ],
+        "uncertain": ["疑" * 100 for _ in range(3)],
+    }
+
+
+def test_split_by_budget_keeps_each_batch_small(settings, meta):
+    """⛔ 回归守卫。
+
+    实测教训：只按条数限制中间结果是不够的 —— 56 分钟的视频有 8 个分段，
+    拼起来的汇总提示词超过上下文窗口，模型陷入异常直到超时。
+    必须按**体量**切批。
+    """
+    from app.notes.prompts import build_reduce_prompt
+
+    gen = NoteGenerator(FakeProvider([]), settings)
+    partials = [to_partial_notes(_fat_partial(i)) for i in range(8)]
+
+    groups = gen._split_by_budget(partials, gen._reduce_budget, meta, "")
+
+    assert len(groups) > 1, "体量超标时必须切批"
+    for group in groups:
+        prompt = build_reduce_prompt(
+            group, meta, transcript_source_label="", compact=True
+        )
+        from app.notes.chunking import estimate_tokens
+
+        assert estimate_tokens(prompt) <= gen._reduce_budget * 1.2
+
+
+def test_split_by_budget_preserves_all_items(settings, meta):
+    gen = NoteGenerator(FakeProvider([]), settings)
+    partials = [to_partial_notes(_fat_partial(i)) for i in range(8)]
+    groups = gen._split_by_budget(partials, gen._reduce_budget, meta, "")
+    assert sum(len(g) for g in groups) == len(partials)
+
+
+def test_split_by_budget_single_oversized_item_is_its_own_group(settings, meta):
+    """单条就超预算时也得自成一批，否则会切不动。"""
+    gen = NoteGenerator(FakeProvider([]), settings)
+    huge = [to_partial_notes(_fat_partial(0))]
+    groups = gen._split_by_budget(huge, 10, meta, "")
+    assert groups == [huge]
+
+
+def test_reduce_budget_leaves_room_for_output(settings):
+    """预算必须给输出留一半，否则窗口塞满就没地方生成笔记了。"""
+    gen = NoteGenerator(FakeProvider([]), settings)
+    assert gen._reduce_budget < settings.llm_num_ctx
+
+
+async def test_reduce_merges_when_partials_too_large(settings, sample_note_payload, meta):
+    """中间结果体量超标时，应当先归并再汇总，而不是硬塞给模型。"""
+    import json as _json
+
+    settings.llm_chunk_chars = 1200
+    settings.llm_chunk_overlap_chars = 0
+    settings.llm_num_ctx = 8192  # 调小上下文，逼出归并
+
+    transcript = _long_transcript(7, 700)
+    fat = _fat_partial(0)
+
+    class SchemaAwareProvider(FakeProvider):
+        """按 schema 区分「中间归并」与「最终汇总」两件事。
+
+        归并用 PartialNotes 的 schema，最终汇总用 Note 的 schema ——
+        这样不必依赖调用次数去猜该返回什么。
+        """
+
+        async def complete_json(self, *, system, user, schema=None, temperature=0.2):
+            self.calls.append(user)
+            keys = set((schema or {}).get("properties", {}))
+            payload = sample_note_payload if "follow_ups" in keys else fat
+            return _json.dumps(payload, ensure_ascii=False)
+
+    provider = SchemaAwareProvider([])
+    gen = NoteGenerator(provider, settings)
+
+    note = await gen.generate(transcript, meta)
+
+    assert note.title == sample_note_payload["title"]
+    # 7 次 map + 至少 1 次归并 + 1 次汇总
+    assert len(provider.calls) > 8
+
+
 async def test_progress_callback_is_called(settings, sample_transcript, sample_note_payload, meta):
     updates: list[tuple[float, str]] = []
     provider = FakeProvider([sample_note_payload])

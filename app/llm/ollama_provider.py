@@ -101,8 +101,14 @@ class OllamaProvider(LLMProvider):
             ) from exc
         except httpx.TimeoutException as exc:
             raise LLMError(
-                f"Ollama 响应超时（{self.timeout}s）。"
-                f"可换更小的模型，或调大 OLLAMA_TIMEOUT。原始错误：{exc}"
+                f"Ollama 响应超时（{self.timeout}s）。\n"
+                f"常见原因与对策：\n"
+                f"  1) 提示词超过了上下文窗口（当前 num_ctx={self.num_ctx}）—— "
+                f"长视频的汇总最容易触发。可调大 LLM_NUM_CTX，"
+                f"或调小 LLM_CHUNK_CHARS 让中间结果更短；\n"
+                f"  2) 模型太大、显存不足在跑 CPU。可用 ollama ps 查看；\n"
+                f"  3) 单纯就是慢。可调大 OLLAMA_TIMEOUT，或换更小的模型。\n"
+                f"原始错误：{exc}"
             ) from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"请求 Ollama 失败：{exc}") from exc

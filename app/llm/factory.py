@@ -30,6 +30,7 @@ def build_provider(settings: Settings) -> LLMProvider:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             timeout=settings.ollama_timeout,
+            num_ctx=settings.llm_num_ctx,
         )
 
     if settings.llm_provider == "none":

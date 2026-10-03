@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     #: 中文强制简体。faster-whisper 常输出繁体，
     #: OpenCC(t2s) 是确定性兜底，提示词只能引导不能保证。
     whisper_simplify_chinese: bool = True
+    #: 复读清理阈值：同一个字符连续出现这么多次就压缩成一个。
+    #:
+    #: 实测：56 分钟的视频里 Whisper 会在多处整段重复同一个字
+    #: （``替替替替…`` / ``宗宗宗宗…``）。这些垃圾会被模型当成内容去总结。
+    #: 默认 6 —— 正常的「哈哈」「谢谢」不受影响。
+    whisper_repeat_min_run: int = Field(default=6, ge=3, le=20)
     whisper_beam_size: int = Field(default=5, ge=1, le=10)
     #: 批处理推理，可提速 3-5 倍
     whisper_use_batched: bool = True
@@ -116,6 +122,13 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen3:8b"
     ollama_timeout: float = Field(default=600.0, gt=0.0)
+    #: 上下文窗口。
+    #:
+    #: ⚠️ 实测教训：默认 8192 太小时，长视频的汇总提示词
+    #: （8 个分段的中间结果拼起来）会**超过上下文**，
+    #: 模型随即陷入异常并一直跑到超时 —— 56 分钟的视频就这样失败了。
+    #: 现在改成按体量做中间归并，同时把窗口提到 16384 留出余量。
+    llm_num_ctx: int = Field(default=16384, ge=2048, le=131072)
 
     #: 以下三项只在 allow_cloud=True 时才会被使用
     allow_cloud: bool = False

@@ -36,6 +36,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from app.asr.cleanup import clean_segments
 from app.asr.model_store import (
     ensure_model,
     is_model_ready,
@@ -76,8 +77,8 @@ _CANDIDATE_PARAMS: dict[str, Any] = {    "beam_size": 5,
     # 中文长音频里开启它会显著加剧「复读机」现象
     "condition_on_previous_text": False,
     "prompt_reset_on_temperature": 0.5,
-    "repetition_penalty": 1.05,
-    "no_repeat_ngram_size": 0,
+    "repetition_penalty": 1.1,
+    "no_repeat_ngram_size": 3,
     "word_timestamps": False,  # sm_120 上打开必崩
     "without_timestamps": False,
     "chunk_length": 30,
@@ -606,6 +607,14 @@ class WhisperEngine:
             for seg in raw_segments:
                 seg.text = to_simplified(seg.text)
 
+        # 清洗 Whisper 的复读幻觉。
+        # 实测：56 分钟的视频里多处出现整段重复同一个字（替替替替…），
+        # 这些垃圾会被模型当成内容去总结，必须在下游之前清掉。
+        raw_segments, dropped, rewritten = clean_segments(
+            raw_segments,
+            min_run=self.settings.whisper_repeat_min_run,
+        )
+
         kept = [s for s in raw_segments if s.text.strip()]
         if not kept:
             raise TranscriptionError(
@@ -616,6 +625,11 @@ class WhisperEngine:
         duration = kept[-1].end
         speed = f"{duration / elapsed:.1f}x 实时" if elapsed > 0 and duration else "未知"
         mode = "批处理" if self._batched is not None else "逐段"
+        cleanup_note = (
+            f"，清洗复读 {dropped} 段/修正 {rewritten} 段"
+            if (dropped or rewritten)
+            else ""
+        )
         return Transcript(
             segments=kept,
             source=TranscriptSource.WHISPER,
@@ -623,6 +637,7 @@ class WhisperEngine:
             note=(
                 f"模型 {self.settings.whisper_model}，设备 {self.device}"
                 f"（{self.compute_type}，{mode}），耗时 {elapsed:.1f}s（{speed}）"
+                f"{cleanup_note}"
             ),
         )
 
