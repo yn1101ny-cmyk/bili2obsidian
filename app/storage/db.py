@@ -128,6 +128,17 @@ class Database:
             self._initialized = True
             logger.debug("数据库就绪：%s", self.path)
 
+    def reset(self) -> None:
+        """数据库文件被删除后重新建表。
+
+        ⚠️ 必须有这个方法：``Vault.clear_all()`` 会**删掉整个 .db 文件**，
+        而 ``init()`` 有 ``_initialized`` 幂等标志 —— 不重置的话
+        清空数据之后应用会一直报 ``no such table``，直到重启为止。
+        """
+        with self._init_lock:
+            self._initialized = False
+        self.init()
+
     # ------------------------------------------------------------------
     # 笔记
     # ------------------------------------------------------------------
@@ -197,6 +208,36 @@ class Database:
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
             return cur.rowcount > 0
+
+    def dedupe_notes(self) -> int:
+        """清理同一 (bvid, page) 的重复记录，只保留最新的一条。
+
+        历史遗留问题：早期版本每次生成都用新的 id，于是反复生成同一个视频
+        会在列表里堆出多条一模一样的笔记（磁盘上却只有一份文件，被覆盖了）。
+        根本原因已修（改为复用 id），这里在启动时再清一次，
+        把已经产生的脏数据修好。返回删除的条数。
+        """
+        self.init()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                DELETE FROM notes
+                WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY bvid, page
+                                   ORDER BY created_at DESC, rowid DESC
+                               ) AS rn
+                        FROM notes
+                    ) WHERE rn = 1
+                )
+                """
+            )
+            removed = cur.rowcount
+        if removed:
+            logger.warning("清理了 %d 条重复的笔记记录", removed)
+        return removed
 
     def count_notes(self) -> int:
         self.init()

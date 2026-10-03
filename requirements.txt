@@ -10,6 +10,9 @@ fastapi>=0.115
 uvicorn[standard]>=0.32
 jinja2>=3.1
 python-multipart>=0.0.9
+#: 把生成的笔记渲染成网页。刻意不用前端 CDN 库 ——
+#: 离线可用，也不给页面增加额外出网点。
+markdown>=3.5
 
 # --- 配置与校验 ---
 pydantic>=2.9

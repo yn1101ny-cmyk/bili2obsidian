@@ -135,6 +135,61 @@ def test_delete_note(db):
     assert db.delete_note("n1") is False
 
 
+# --- 重复记录清理 ---
+
+
+def test_dedupe_removes_duplicate_bvid_page(db):
+    """⛔ 回归守卫。
+
+    历史遗留：早期每次生成都用新 id，反复生成同一视频会堆出多条重复记录
+    （磁盘上却只有一份文件）。实测出现过 9 条记录对 4 个文件。
+    """
+    for i in range(5):
+        db.save_note(
+            NoteRecord(
+                id=f"n{i}",
+                bvid="BV1",
+                title=f"第{i}次",
+                one_liner="",
+                created_at=datetime(2026, 1, 1 + i),
+            ),
+            page=1,
+        )
+    assert db.count_notes() == 5
+
+    removed = db.dedupe_notes()
+
+    assert removed == 4
+    assert db.count_notes() == 1
+    # 保留的是最新的那条
+    assert db.list_notes()[0].title == "第4次"
+
+
+def test_dedupe_keeps_different_pages(db):
+    db.save_note(NoteRecord(id="a", bvid="BV1", title="p1", one_liner=""), page=1)
+    db.save_note(NoteRecord(id="b", bvid="BV1", title="p2", one_liner=""), page=2)
+    assert db.dedupe_notes() == 0
+    assert db.count_notes() == 2
+
+
+def test_dedupe_keeps_different_videos(db):
+    db.save_note(NoteRecord(id="a", bvid="BV1", title="x", one_liner=""))
+    db.save_note(NoteRecord(id="b", bvid="BV2", title="y", one_liner=""))
+    assert db.dedupe_notes() == 0
+    assert db.count_notes() == 2
+
+
+def test_dedupe_on_empty_db(db):
+    assert db.dedupe_notes() == 0
+
+
+def test_dedupe_is_idempotent(db):
+    for i in range(3):
+        db.save_note(NoteRecord(id=f"n{i}", bvid="BV1", title="t", one_liner=""))
+    db.dedupe_notes()
+    assert db.dedupe_notes() == 0
+
+
 def test_count_notes(db):
     assert db.count_notes() == 0
     db.save_note(NoteRecord(id="n1", bvid="BV1", title="t", one_liner=""))
@@ -370,6 +425,24 @@ def test_list_note_files(vault):
     for i in range(3):
         vault.write_note(vault.build_note_path(f"BV{i}", f"标题{i}"), "x")
     assert len(vault.list_note_files()) == 3
+
+
+def test_list_note_files_excludes_index(vault):
+    """⛔ 回归守卫：索引页不是笔记。
+
+    实测过统计里多出一篇 —— 因为 glob("*.md") 把 index.md 也算进来了，
+    于是「笔记 4 篇」而数据库里只有 3 条。
+    """
+    vault.write_note(vault.build_note_path("BV1", "真笔记"), "x")
+    vault.write_index("# 索引")
+    files = vault.list_note_files()
+    assert [p.name for p in files] == ["真笔记_BV1.md"]
+
+
+def test_stats_excludes_index(vault):
+    vault.write_note(vault.build_note_path("BV1", "真笔记"), "x")
+    vault.write_index("# 索引")
+    assert vault.stats().notes == 1
 
 
 def test_write_index(vault, settings):

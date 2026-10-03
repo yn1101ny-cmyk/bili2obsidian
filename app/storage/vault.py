@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 #: 文件名里不允许出现的字符
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
+#: 索引页的文件名。它**不是笔记**，统计与清理时要排除。
+INDEX_FILENAME = "index.md"
+
 
 def safe_filename(text: str, *, limit: int = 80, fallback: str = "note") -> str:
     """把任意标题清理成安全的文件名（不含扩展名）。"""
@@ -121,17 +124,26 @@ class Vault:
         return False
 
     def list_note_files(self) -> list[Path]:
+        """列出笔记文件（**不含**索引页）。
+
+        ``glob("*.md")`` 会把 ``index.md`` 也算进来，导致统计出的
+        笔记数比实际多一篇 —— 实测就这样差了 1。
+        """
         if not self.settings.notes_dir.exists():
             return []
         return sorted(
-            self.settings.notes_dir.glob("*.md"),
+            (
+                p
+                for p in self.settings.notes_dir.glob("*.md")
+                if p.name != INDEX_FILENAME
+            ),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
 
     def write_index(self, markdown: str) -> Path:
         """写一份索引页，方便直接用 Obsidian 等工具打开整个目录。"""
-        path = self.settings.notes_dir / "index.md"
+        path = self.settings.notes_dir / INDEX_FILENAME
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(markdown, encoding="utf-8")
         return path

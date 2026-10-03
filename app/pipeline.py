@@ -83,6 +83,18 @@ def note_title_for_filename(meta: VideoMeta) -> str:
     return meta.display_title
 
 
+def reuse_or_new_note_id(db: Any, bvid: str, page: int) -> str:
+    """同一视频重复生成时，复用已有的记录 id。
+
+    **记录 id 必须和文件名一样稳定。**
+    实测：反复生成同一个视频后，笔记列表里堆了 5 条一模一样的「青椒虽小…」
+    —— 每次都 ``new_id()`` 插入新记录，而磁盘上只有一份文件（被覆盖了）。
+    复用 id 之后，重复生成是"更新"而不是"新增"。
+    """
+    existing = db.find_note_by_bvid(bvid, page)
+    return existing.id if existing is not None else new_id()
+
+
 def merge_for_notes(transcript: Transcript, *, repeat_min_run: int = 6) -> Transcript:
     """把转写整理成适合喂给模型的形式：**先清洗复读，再合并碎句**。
 
@@ -235,7 +247,7 @@ class NotePipeline:
 
         # ---------------- 5. 渲染与落盘 ----------------
         report(JobStage.RENDERING, 0.96, "正在保存笔记…")
-        note_id = new_id()
+        note_id = reuse_or_new_note_id(self.db, meta.bvid, page)
         markdown = render_note_markdown(note, meta, transcript)
 
         path = self.vault.build_note_path(

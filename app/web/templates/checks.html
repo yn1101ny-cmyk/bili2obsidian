@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}环境自检 · MyNoteApp{% endblock %}
+
+{% block content %}
+<section class="card">
+  <div class="section-head">
+    <h2>环境自检</h2>
+    <span class="spacer"></span>
+    <label class="toggle">
+      <input type="checkbox" id="full-check">
+      含联网检查
+    </label>
+    <button id="rerun-check" type="button">重新检查</button>
+  </div>
+  <p class="hint">
+    默认只做本地检查（不联网）。勾选后会请求 B站 与 Ollama 验证连通性 ——
+    只会取一个公开视频的元数据，不发送你的任何数据。
+  </p>
+
+  <div id="checks-out">
+    <p class="muted">检查中…</p>
+  </div>
+</section>
+
+<section class="card">
+  <h2>本机数据</h2>
+  <div id="data-stats"><p class="muted">加载中…</p></div>
+  <p class="hint">
+    清除数据会删掉 <code>data/</code> 下的全部内容：笔记、转写缓存、下载的音频、
+    模型权重。**不可撤销**。
+  </p>
+  <button class="danger" id="clear-data" type="button">清除全部本地数据</button>
+</section>
+{% endblock %}

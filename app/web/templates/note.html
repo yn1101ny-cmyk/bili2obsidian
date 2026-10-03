@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}{{ record.title }} · MyNoteApp{% endblock %}
+
+{% block content %}
+<article class="note">
+  <nav class="crumbs"><a href="/">← 返回首页</a></nav>
+
+  <div class="note-meta">
+    <span class="pill">{{ record.transcript_source.label }}</span>
+    <span class="pill">可信度 {{ record.transcript_source.confidence }}</span>
+    <span class="pill">{{ record.created_at.strftime("%Y-%m-%d %H:%M") }}</span>
+    <span class="spacer"></span>
+    <button class="ghost" id="copy-md" type="button" data-note-id="{{ record.id }}">
+      复制 Markdown
+    </button>
+    <button class="ghost danger" id="delete-note" type="button" data-note-id="{{ record.id }}">
+      删除
+    </button>
+  </div>
+
+  <div class="markdown" id="note-body">
+    {{ body_html | safe }}
+  </div>
+</article>
+{% endblock %}
+
+{% block scripts %}
+<script>window.NOTE_ID = {{ record.id | tojson }};</script>
+{% endblock %}

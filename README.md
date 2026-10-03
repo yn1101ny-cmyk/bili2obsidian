@@ -10,22 +10,23 @@
 
 ## 当前状态
 
-**内核已跑通并实测验证**（Windows 11 + RTX 5060 Laptop 8GB）：
+**已完成并实测验证**（Windows 11 + RTX 5060 Laptop 8GB）：
 
 ```
 贴链接 → 解析 → 取元数据 → 试字幕 ─┬─ 有字幕 → 直接用
                                     └─ 无字幕 → 下音频 → GPU 转写
                                               ↓
                           分块理解 → 整合成笔记 → Markdown 落盘 + 入库
+                                              ↓
+                                       本地 Web 界面阅读
 ```
 
-实测数据：20 分钟中文视频，GPU 转写 **36 秒（33x 实时）**，输出简体中文。
+实测数据：20 分钟中文视频，GPU 转写 **27~36 秒（33~45x 实时）**，
+输出简体中文；56 分钟长视频走分块 map-reduce 也能正常产出。
 
-已实现：链接解析、B站客户端、字幕解析、音频下载、本地 Whisper 转写、
-笔记生成（map-reduce）、Markdown 渲染、SQLite + 文件存储、一键清除数据、
-环境自检、命令行入口。
-
-未实现：Web 界面。
+已实现：本地 Web 界面、链接解析、B站客户端、字幕解析、音频下载、
+本地 Whisper 转写、笔记生成（map-reduce）、Markdown 渲染、
+SQLite + 文件存储、一键清除数据、环境自检、命令行入口。
 
 ---
 
@@ -45,9 +46,26 @@ Copy-Item .env.example .env
 # 4. 自检：确认这台机器能不能用
 .\.venv\Scripts\python.exe -m scripts.doctor
 
-# 5. 生成第一篇笔记
+# 5. 启动本地界面，浏览器打开 http://127.0.0.1:8765
+.\.venv\Scripts\python.exe -m app
+
+# 也可以完全不用界面，直接命令行产出笔记
 .\.venv\Scripts\python.exe -m scripts.mynote BV1GJ411x7h7
 ```
+
+### 界面
+
+三个页面，刻意做得极简：
+
+| 页面 | 内容 |
+|---|---|
+| **首页** `/` | 粘贴链接 → 实时进度（阶段 / 进度条 / 日志 / 可取消）→ 最近笔记列表 |
+| **笔记页** `/notes/{id}` | 渲染好的笔记 + 复制 Markdown + 删除 |
+| **自检页** `/checks` | 环境状态、本机数据占用、一键清除数据 |
+
+改配置直接编辑 `.env`，不做设置界面。前端是原生 HTML/CSS/JS，
+**不引用任何 CDN 资源** —— 离线可用，也不给页面增加出网点
+（有测试盯着这一条）。
 
 ### 国内网络的两个必设项
 
@@ -69,6 +87,7 @@ Ollama registry 在国内也常被阻断（`dial tcp ... i/o timeout`）。
 
 | 命令 | 用途 |
 |---|---|
+| `python -m app` | 启动本地 Web 界面 |
 | `python -m scripts.mynote <链接>` | 跑完整链路，产出一篇笔记 |
 | `python -m scripts.doctor` | 环境自检（`--offline` 不联网，`--json` 机器可读） |
 | `python -m scripts.smoke_transcribe <链接>` | 只验证「下载 + 转写」这一段 |
@@ -148,6 +167,8 @@ app/
 ├── config.py            集中配置（密钥隔离、回环校验、云端默认关闭）
 ├── schemas.py           领域模型（区分 video / model 来源）
 ├── pipeline.py          端到端编排 + 后台任务管理
+├── logging_setup.py     日志（UTF-8 安全、落盘、不打印密钥）
+├── __main__.py          python -m app 启动 Web 界面
 ├── bili/
 │   ├── urls.py          链接解析（纯函数）
 │   ├── client.py        B站 API（buvid 指纹、限速、缓存、退避重试）  ← 出网
@@ -155,14 +176,21 @@ app/
 ├── media/downloader.py  yt-dlp 音频下载                              ← 出网
 ├── asr/
 │   ├── model_store.py   可续传的模型下载器（镜像回退、断点续传）      ← 出网
+│   ├── cleanup.py       复读幻觉清洗（纯函数）
 │   └── whisper_engine.py 本地转写（Blackwell 适配、热词偏置）
 ├── notes/
 │   ├── chunking.py      分块（纯函数）
 │   ├── prompts.py       提示词与 JSON Schema 展平
 │   ├── pipeline.py      map-reduce 生成 + 质量重试
-│   └── render.py        Markdown 渲染（纯函数）
+│   └── render.py        Markdown 渲染（纯函数，不产出原始 HTML）
 ├── llm/                 Ollama（本地）/ OpenAI 兼容（可选云端）       ← 出网
-└── storage/             SQLite + 笔记文件仓库
+├── storage/             SQLite + 笔记文件仓库
+└── web/
+    ├── server.py        FastAPI 应用工厂
+    ├── routes.py        页面 + JSON API
+    ├── markdown_render.py  安全渲染（先转义再转换，杜绝注入）
+    ├── templates/       三个页面的 Jinja2 模板
+    └── static/          原生 CSS/JS，无 CDN
 ```
 
 ---

@@ -8,8 +8,19 @@ from __future__ import annotations
 
 import pytest
 
-from app.pipeline import merge_for_notes, note_title_for_filename
-from app.schemas import Transcript, TranscriptSegment, TranscriptSource, VideoMeta
+from app.pipeline import (
+    merge_for_notes,
+    note_title_for_filename,
+    reuse_or_new_note_id,
+)
+from app.schemas import (
+    NoteRecord,
+    Transcript,
+    TranscriptSegment,
+    TranscriptSource,
+    VideoMeta,
+)
+from app.storage.db import Database
 
 
 def _seg(i: int, text: str, dur: float = 1.0) -> TranscriptSegment:
@@ -131,3 +142,57 @@ def test_note_filename_is_stable_across_calls():
 def test_note_filename_includes_part_title_for_multipart():
     meta = VideoMeta(bvid="BV1", title="课程", part_title="第三讲")
     assert note_title_for_filename(meta) == "课程 - 第三讲"
+
+
+# ---------------------------------------------------------------------------
+# 记录 id 稳定性
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def db(settings) -> Database:
+    d = Database(settings.db_path)
+    d.init()
+    return d
+
+
+def test_reuse_or_new_note_id_generates_when_absent(db):
+    """第一次生成应当是新 id。"""
+    note_id = reuse_or_new_note_id(db, "BV1GJ411x7h7", 1)
+    assert note_id
+    assert db.get_note(note_id) is None
+
+
+def test_reuse_or_new_note_id_reuses_existing(db):
+    """⛔ 回归守卫。
+
+    实测：反复生成同一个视频后，笔记列表里堆了 5 条一模一样的记录，
+    而磁盘上只有一份文件。必须复用已有 id，让重复生成变成"更新"。
+    """
+    db.save_note(
+        NoteRecord(id="existing1", bvid="BV1GJ411x7h7", title="t", one_liner=""),
+        page=1,
+    )
+    assert reuse_or_new_note_id(db, "BV1GJ411x7h7", 1) == "existing1"
+
+
+def test_reuse_or_new_note_id_is_stable_across_calls(db):
+    db.save_note(
+        NoteRecord(id="only", bvid="BV1", title="t", one_liner=""), page=1
+    )
+    ids = {reuse_or_new_note_id(db, "BV1", 1) for _ in range(5)}
+    assert ids == {"only"}
+
+
+def test_reuse_or_new_note_id_separates_pages(db):
+    db.save_note(NoteRecord(id="p1", bvid="BV1", title="a", one_liner=""), page=1)
+    db.save_note(NoteRecord(id="p2", bvid="BV1", title="b", one_liner=""), page=2)
+    assert reuse_or_new_note_id(db, "BV1", 1) == "p1"
+    assert reuse_or_new_note_id(db, "BV1", 2) == "p2"
+
+
+def test_reuse_or_new_note_id_separates_videos(db):
+    db.save_note(NoteRecord(id="a", bvid="BV1", title="x", one_liner=""))
+    db.save_note(NoteRecord(id="b", bvid="BV2", title="y", one_liner=""))
+    assert reuse_or_new_note_id(db, "BV1", 1) == "a"
+    assert reuse_or_new_note_id(db, "BV2", 1) == "b"
