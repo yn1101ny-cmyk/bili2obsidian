@@ -20,9 +20,11 @@ from app.asr.whisper_engine import (  # noqa: E402
     setup_cuda_dll_paths,
     supported_compute_types,
 )
+from app.console import enable_utf8_output  # noqa: E402
 
 
 def main() -> int:
+    enable_utf8_output()
     print("=" * 68)
     print("CTranslate2 / CUDA 自检")
     print("=" * 68)
