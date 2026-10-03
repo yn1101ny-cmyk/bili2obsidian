@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from app.pipeline import merge_for_notes
-from app.schemas import Transcript, TranscriptSegment, TranscriptSource
+from app.pipeline import merge_for_notes, note_title_for_filename
+from app.schemas import Transcript, TranscriptSegment, TranscriptSource, VideoMeta
 
 
 def _seg(i: int, text: str, dur: float = 1.0) -> TranscriptSegment:
@@ -104,3 +104,30 @@ def test_merge_result_is_still_a_valid_transcript():
     assert not merged.is_empty()
     assert merged.char_count > 0
     assert merged.segments == sorted(merged.segments, key=lambda s: s.start)
+
+
+# ---------------------------------------------------------------------------
+# 文件名稳定性
+# ---------------------------------------------------------------------------
+
+
+def test_note_filename_uses_video_title_not_model_title():
+    """⛔ 回归守卫。
+
+    实测教训：模型每次生成的笔记标题都不一样（同一视频先后得到过
+    「青椒虽小…」和「MGSD刹帝利…」），文件名跟着变，
+    重复生成时会堆出多个内容重复、文件名不同的笔记。
+    """
+    meta = VideoMeta(bvid="BV1", title="视频原标题", part_title="")
+    assert note_title_for_filename(meta) == "视频原标题"
+
+
+def test_note_filename_is_stable_across_calls():
+    """同样的视频元数据必须给出同样的文件名依据。"""
+    meta = VideoMeta(bvid="BV1", title="标题", part_title="")
+    assert note_title_for_filename(meta) == note_title_for_filename(meta)
+
+
+def test_note_filename_includes_part_title_for_multipart():
+    meta = VideoMeta(bvid="BV1", title="课程", part_title="第三讲")
+    assert note_title_for_filename(meta) == "课程 - 第三讲"

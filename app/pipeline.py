@@ -71,6 +71,18 @@ class Cancelled(MyNoteError):
     """用户主动取消了任务。"""
 
 
+def note_title_for_filename(meta: VideoMeta) -> str:
+    """笔记文件名该用哪个标题。
+
+    **用视频原标题，不要用模型改写的标题。**
+    实测教训：模型每次生成的笔记标题都不一样（同一个视频先后得到过
+    「青椒虽小…」和「MGSD刹帝利…」两个标题），文件名跟着变，
+    于是重复生成时会堆出好几个内容重复、文件名不同的笔记。
+    原标题是稳定的，重复生成会覆盖同一个文件。
+    """
+    return meta.display_title
+
+
 def merge_for_notes(transcript: Transcript, *, repeat_min_run: int = 6) -> Transcript:
     """把转写整理成适合喂给模型的形式：**先清洗复读，再合并碎句**。
 
@@ -226,7 +238,9 @@ class NotePipeline:
         note_id = new_id()
         markdown = render_note_markdown(note, meta, transcript)
 
-        path = self.vault.build_note_path(meta.bvid, note.title or meta.display_title, page)
+        path = self.vault.build_note_path(
+            meta.bvid, note_title_for_filename(meta), page
+        )
         self.vault.write_note(path, markdown)
 
         # 转写全文另存一份，便于全文搜索
