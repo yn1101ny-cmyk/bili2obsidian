@@ -129,6 +129,32 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _TOC_TITLE_LIMIT = 20
 
 
+def strip_leading_heading(markdown: str) -> str:
+    """去掉正文开头的那个 ``# 标题``。
+
+    笔记 Markdown 文件的第一行是 ``# 标题``（给 Obsidian 之类工具用的），
+    但网页顶部已经用 ``<h1>`` 显示标题了（旁边还有来源、时间、操作按钮）——
+    正文再渲染一遍就会变成**两个一模一样的标题上下叠着**，看着像文字重叠。
+
+    所以只剥掉**紧跟在 frontmatter 之后的第一行一级标题**，
+    文件本身保持不动；正文中间出现的 ``#`` 也不会被误伤。
+    """
+    lines = markdown.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # 只有形如 `# 标题` 的一级标题才剥；`##` 是正文小节，必须保留
+        if re.match(r"^#\s+\S", stripped):
+            remainder = lines[index + 1 :]
+            # 连带去掉紧随其后的空行，避免开头留一大块空白
+            while remainder and not remainder[0].strip():
+                remainder.pop(0)
+            return "\n".join(remainder)
+        break  # 第一行有效内容不是一级标题，就什么都不动
+    return markdown
+
+
 def add_heading_anchors(rendered: str) -> tuple[str, list[dict[str, str]]]:
     """给渲染结果里的 ``<h2>`` 加上锚点 id，并返回目录。
 
@@ -160,8 +186,14 @@ def add_heading_anchors(rendered: str) -> tuple[str, list[dict[str, str]]]:
 
 
 def render_note_body(markdown: str) -> tuple[str, list[dict[str, str]]]:
-    """笔记正文一步到位：去 frontmatter → 转安全 HTML → 加锚点 + 目录。"""
-    body = render_markdown(strip_frontmatter(markdown))
+    """笔记正文一步到位：去 frontmatter → 去重复标题 → 转安全 HTML → 加锚点。
+
+    ⚠️ 顺序有讲究：必须**先去掉正文里的一级标题**再渲染，
+    否则页面顶部和正文会出现两个相同的 ``<h1>``，看起来就是标题重叠。
+    """
+    body = render_markdown(
+        strip_leading_heading(strip_frontmatter(markdown))
+    )
     return add_heading_anchors(body)
 
 
@@ -170,5 +202,6 @@ __all__ = [
     "render_note_body",
     "add_heading_anchors",
     "strip_frontmatter",
+    "strip_leading_heading",
     "safe_url",
 ]

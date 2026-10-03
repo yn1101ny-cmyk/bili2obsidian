@@ -78,7 +78,10 @@ code, pre, .mono { font-family: var(--mono); }
   align-items: center;
   gap: var(--sp-4);
   padding: 0 var(--sp-3);
-  background: rgba(255, 251, 245, 0.88);
+  /* ⚠️ 不能太透明。原来是 0.88，标题滚到顶栏下面时会**透出来**，
+     和「MyNoteApp」「首页」这些字叠在一起，看着就是文字重叠。
+     0.97 保留了层次感，但已经看不出底下的内容了。 */
+  background: rgba(255, 251, 245, 0.97);
   backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 1px solid var(--border);
 }

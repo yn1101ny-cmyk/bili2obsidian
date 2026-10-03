@@ -110,6 +110,159 @@ def find_browser() -> str | None:
     return None
 
 
+def kill_process_tree(pid: int) -> None:
+    """连同子进程一起杀掉。
+
+    ⚠️ ``Popen.terminate()`` 在 Windows 上**只结束父进程**，
+    渲染器 / GPU / 网络等子进程会留下来占着 profile 目录。
+    攒够几次之后，新的无头实例就再也起不来了
+    （表现为「调试端口没起来」，而且看不出原因）。
+    所以这里用 taskkill /T 结束整棵树。
+    """
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, timeout=20,
+        )
+    except Exception:  # noqa: BLE001 - 清理失败不该让检查本身失败
+        pass
+
+
+#: 全页面文字体检 —— 遍历**所有**可见文字元素两两做几何相交检测。
+#:
+#: 上面那个 MEASURE 只看几个关键元素的相对位置，
+#: 这个才是真正能抓住「标题重叠」这类问题的：
+#: 曾出现过正文里的 `# 标题` 与页面顶部 `<h1>` 都渲染出来，
+#: 两个一模一样的标题上下叠着 —— 只测 sidebar/main 是发现不了的。
+SCAN_ALL = r"""
+(() => {
+  const VISIBLE = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 1 && r.height > 1;
+  };
+  const all = Array.from(document.querySelectorAll('*'));
+
+  // 只取「叶子级」文字元素，避免父子天然包含
+  const textEls = all.filter((el) => {
+    if (!VISIBLE(el)) return false;
+    const own = Array.from(el.childNodes)
+      .filter((n) => n.nodeType === 3)
+      .map((n) => n.textContent.trim()).join('');
+    return own.length > 0;
+  });
+
+  // 吸顶/固定元素是**设计上就要浮在内容之上**的（顶栏、吸顶目录条），
+  // 所以它们与内容的几何交叠不算缺陷。真正要抓的是
+  // 正常文档流内部两块内容压在一起。
+  const inOverlay = (el) => {
+    for (let p = el; p; p = p.parentElement) {
+      const pos = getComputedStyle(p).position;
+      if (pos === 'sticky' || pos === 'fixed') return true;
+    }
+    return false;
+  };
+  const flow = textEls.filter((el) => !inOverlay(el));
+
+  const rect = (el) => {
+    const r = el.getBoundingClientRect();
+    return { t: r.top, l: r.left, r: r.right, b: r.bottom, w: r.width, h: r.height };
+  };
+  const path = (el) => {
+    const cls = (el.className && typeof el.className === 'string')
+      ? '.' + el.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+    return el.tagName.toLowerCase() + cls;
+  };
+
+  // 1. 文字元素两两重叠（只看正常文档流，吸顶浮层不算）
+  const overlaps = [];
+  for (let i = 0; i < flow.length; i++) {
+    for (let j = i + 1; j < flow.length; j++) {
+      const a = flow[i], b = flow[j];
+      if (a.contains(b) || b.contains(a)) continue;
+      const A = rect(a), B = rect(b);
+      const ox = Math.min(A.r, B.r) - Math.max(A.l, B.l);
+      const oy = Math.min(A.b, B.b) - Math.max(A.t, B.t);
+      if (ox > 2 && oy > 2) {
+        const area = ox * oy;
+        const smaller = Math.min(A.w * A.h, B.w * B.h);
+        if (area / smaller > 0.25) {
+          overlaps.push({ a: path(a), b: path(b),
+            aText: a.textContent.trim().slice(0, 40),
+            bText: b.textContent.trim().slice(0, 40),
+            ox: Math.round(ox), oy: Math.round(oy) });
+        }
+      }
+    }
+  }
+
+  // 1b. 吸顶顶栏必须足够不透明。
+  //     半透明的吸顶栏会让滚过去的内容**透出来**，
+  //     和自己的文字叠在一起 —— 看起来就是文字重叠。
+  const topbar = document.querySelector('.topbar');
+  let topbarAlpha = null;
+  if (topbar) {
+    const bg = getComputedStyle(topbar).backgroundColor;
+    const m = bg.match(/rgba?\(([^)]+)\)/);
+    if (m) {
+      const parts = m[1].split(',').map((s) => parseFloat(s));
+      topbarAlpha = parts.length === 4 ? parts[3] : 1;
+    }
+  }
+
+  // 2. 内容溢出容器。要往上找祖先：横向滚动的胶囊导航里，
+  //    溢出的是内层 <ul>，负责滚动的是外层容器，只看自身会误报。
+  const inScrollable = (el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const s = getComputedStyle(p);
+      if (s.overflowX === 'auto' || s.overflowX === 'scroll') return true;
+    }
+    return false;
+  };
+  const overflow = [];
+  for (const el of all) {
+    if (!VISIBLE(el)) continue;
+    const s = getComputedStyle(el);
+    if (s.overflowX === 'auto' || s.overflowX === 'scroll') continue;
+    if (inScrollable(el)) continue;
+    if (el.scrollWidth - el.clientWidth > 4 && el.clientWidth > 0) {
+      overflow.push({ el: path(el), text: (el.textContent || '').trim().slice(0, 40),
+                      delta: el.scrollWidth - el.clientWidth });
+    }
+  }
+
+  // 3. 行高小于字号 → 文字会被压扁重叠
+  const squashed = [];
+  for (const el of textEls) {
+    const s = getComputedStyle(el);
+    const fs = parseFloat(s.fontSize);
+    const lh = s.lineHeight === 'normal' ? fs * 1.2 : parseFloat(s.lineHeight);
+    if (lh < fs * 0.85) {
+      squashed.push({ el: path(el), fontSize: fs, lineHeight: lh,
+                      text: el.textContent.trim().slice(0, 30) });
+    }
+  }
+
+  // 4. 相邻且完全相同的标题（同一段文字渲染了两遍）
+  const heads = Array.from(document.querySelectorAll('h1,h2,h3'))
+    .filter(VISIBLE).map((h) => h.textContent.trim());
+  const dupes = [];
+  for (let i = 1; i < heads.length; i++) {
+    if (heads[i] && heads[i] === heads[i - 1]) dupes.push(heads[i]);
+  }
+
+  return JSON.stringify({
+    textElementCount: textEls.length,
+    flowCount: flow.length,
+    overlaps, overflow, squashed, adjacentDuplicateHeadings: dupes,
+    h1Count: document.querySelectorAll('h1').length,
+    topbarAlpha,
+  });
+})()
+"""
+
+
 async def _evaluate(ws, expression: str) -> str:
     await ws.send(json.dumps({
         "id": 1,
@@ -147,7 +300,10 @@ async def run(args: argparse.Namespace) -> int:
 
     note_id = args.note or (notes[0]["id"] if notes else None)
     port = args.port
-    profile = Path("tmp/edge-cdp").resolve()
+    # ⚠️ profile 目录必须每次都不一样，而且**必须是绝对路径**：
+    #   * 固定路径时，上一次没退干净的 Edge 会占住它，新进程起不来；
+    #   * 相对路径会被 Edge 按它自己的工作目录解析，同样起不来。
+    profile = (Path("tmp") / f"edge-cdp-{port}").resolve()
     profile.mkdir(parents=True, exist_ok=True)
 
     proc = subprocess.Popen(
@@ -279,6 +435,65 @@ async def run(args: argparse.Namespace) -> int:
                 elif data["tocCount"]:
                     print("  ✅ 滚动监听正常")
 
+                # ---- 全页面文字体检 ----
+                await ws.send(json.dumps({
+                    "id": 7, "method": "Runtime.evaluate",
+                    "params": {"expression": SCAN_ALL, "returnByValue": True},
+                }))
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if msg.get("id") == 7:
+                        scan = json.loads(msg["result"]["result"]["value"])
+                        break
+
+                print(f"  （已扫描 {scan['textElementCount']} 个文字元素，"
+                      f"其中文档流内 {scan['flowCount']} 个；h1 × {scan['h1Count']}）")
+
+                if scan["overlaps"]:
+                    failures.append(f"{label}: 文字重叠 {scan['overlaps'][:3]}")
+                    print(f"  ❌ 文字重叠 {len(scan['overlaps'])} 处：")
+                    for o in scan["overlaps"][:4]:
+                        print(f"     {o['a']} ↔ {o['b']}  交叠 {o['ox']}×{o['oy']}px")
+                        print(f"        「{o['aText']}」 / 「{o['bText']}」")
+                else:
+                    print("  ✅ 无文字重叠")
+
+                if scan.get("topbarAlpha") is not None and scan["topbarAlpha"] < 0.95:
+                    failures.append(
+                        f"{label}: 顶栏不透明度只有 {scan['topbarAlpha']}，"
+                        "滚过去的内容会透出来"
+                    )
+                    print(f"  ❌ 顶栏太透明（alpha={scan['topbarAlpha']}）")
+                elif scan.get("topbarAlpha") is not None:
+                    print(f"  ✅ 顶栏不透明（alpha={scan['topbarAlpha']}）")
+
+                if scan["overflow"]:
+                    failures.append(f"{label}: 内容溢出 {scan['overflow'][:3]}")
+                    print(f"  ❌ 内容溢出容器 {len(scan['overflow'])} 处：")
+                    for o in scan["overflow"][:4]:
+                        print(f"     {o['el']} 超出 {o['delta']}px  「{o['text']}」")
+                else:
+                    print("  ✅ 无内容溢出")
+
+                if scan["squashed"]:
+                    failures.append(f"{label}: 行高异常 {scan['squashed'][:3]}")
+                    print(f"  ❌ 行高过小 {len(scan['squashed'])} 处（文字会被压扁）")
+                else:
+                    print("  ✅ 无行高异常")
+
+                if scan["adjacentDuplicateHeadings"]:
+                    failures.append(
+                        f"{label}: 相邻重复标题 {scan['adjacentDuplicateHeadings']}"
+                    )
+                    print(f"  ❌ 相邻重复标题：{scan['adjacentDuplicateHeadings']}")
+                else:
+                    print("  ✅ 无重复标题")
+
+                # 笔记页最多只能有一个 h1（页面顶部那个）
+                if scan["h1Count"] > 1:
+                    failures.append(f"{label}: 出现 {scan['h1Count']} 个 h1")
+                    print(f"  ❌ h1 数量异常：{scan['h1Count']}")
+
             if note_id:
                 await visit(
                     f"笔记页 · {args.width}px",
@@ -291,11 +506,9 @@ async def run(args: argparse.Namespace) -> int:
                 )
             await visit(f"首页 · {args.width}px", base + "/")
     finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001
-            proc.kill()
+        # 必须连子进程一起收掉，否则 profile 目录被占住，
+        # 下一次检查会以「调试端口没起来」失败
+        kill_process_tree(proc.pid)
 
     print("\n" + "=" * 60)
     if failures:

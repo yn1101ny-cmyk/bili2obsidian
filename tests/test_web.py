@@ -248,7 +248,9 @@ def test_render_note_body_pipeline():
     md = "---\ntitle: x\n---\n\n# 大标题\n\n## 重点\n\n正文\n\n## 存疑\n"
     html, toc = render_note_body(md)
     assert "bvid" not in html
-    assert "<h1>" in html
+    # 正文里的一级标题被去掉（页面顶部已单独渲染标题），只留正文小节
+    assert "<h1>" not in html
+    assert "大标题" not in html
     assert len(toc) == 2
     assert "sec-1" in html
 
@@ -258,6 +260,77 @@ def test_render_note_body_escapes_script():
 
     html, _ = render_note_body("## 小节\n\n<script>alert(1)</script>\n")
     assert "<script>" not in html
+
+
+# ---------------------------------------------------------------------------
+# 正文里的一级标题必须去掉（否则页面顶部和正文两个标题叠在一起）
+# ---------------------------------------------------------------------------
+
+
+def test_strip_leading_heading_removes_h1():
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "# 我的笔记标题\n\n正文第一段\n"
+    assert strip_leading_heading(md).strip() == "正文第一段"
+
+
+def test_strip_leading_heading_skips_leading_blank_lines():
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "\n\n# 标题\n\n正文\n"
+    assert strip_leading_heading(md).strip() == "正文"
+
+
+def test_strip_leading_heading_keeps_h2():
+    """⛔ `##` 是正文小节，绝不能当成标题删掉。"""
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "## 🎯 一句话总结\n\n内容\n"
+    assert strip_leading_heading(md) == md
+
+
+def test_strip_leading_heading_only_touches_the_first_line():
+    """正文中间的一级标题不归它管。"""
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "正文\n\n# 中途出现的标题\n\n更多正文\n"
+    assert strip_leading_heading(md) == md
+
+
+def test_strip_leading_heading_noop_without_heading():
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "就是一段普通文字\n"
+    assert strip_leading_heading(md) == md
+
+
+def test_strip_leading_heading_requires_space_after_hash():
+    """`#话题` 这种没有空格的不是标题。"""
+    from app.web.markdown_render import strip_leading_heading
+
+    md = "#标签不是标题\n"
+    assert strip_leading_heading(md) == md
+
+
+def test_strip_leading_heading_empty_input():
+    from app.web.markdown_render import strip_leading_heading
+
+    assert strip_leading_heading("") == ""
+
+
+def test_note_body_has_exactly_one_h1():
+    """⛔ 回归守卫：正文渲染结果里不能再出现 `<h1>`。
+
+    笔记 Markdown 开头自带 `# 标题`，而页面顶部已经渲染了标题 ——
+    两个 h1 会让用户看到两个一模一样的标题叠在一起（曾真的这样过）。
+    """
+    from app.web.markdown_render import render_note_body
+
+    md = "---\ntitle: x\n---\n\n# 我的 AI 编程全流程\n\n## 重点\n\n内容\n"
+    html, _ = render_note_body(md)
+    assert "<h1>" not in html, "正文里又出现了 h1，会与页面顶部标题重复"
+    assert "我的 AI 编程全流程" not in html
+    assert "重点" in html
 
 
 # ===========================================================================
@@ -403,6 +476,24 @@ def test_smooth_scroll_and_scroll_margin_present():
     assert "scroll-margin-top" in css
 
 
+def test_topbar_is_nearly_opaque():
+    """⛔ 吸顶顶栏的透明度必须够高。
+
+    实测踩过：顶栏用了 rgba(..., 0.88) + 毛玻璃，笔记标题往上滚到顶栏
+    下面时**会透出来**，和「MyNoteApp」「首页」这些字叠在一起 ——
+    看起来就是标题出现了重叠文字。0.95 以上就看不出底下的内容了。
+    """
+    css = _css()
+    match = re.search(r"\.topbar\s*\{[^}]*?background:\s*rgba\(([^)]+)\)", css, re.S)
+    assert match, "顶栏没有用 rgba 背景（或写法变了，请同步更新本测试）"
+    parts = [p.strip() for p in match.group(1).split(",")]
+    assert len(parts) == 4, f"顶栏背景不是 rgba：{match.group(0)}"
+    alpha = float(parts[3])
+    assert alpha >= 0.95, (
+        f"顶栏不透明度只有 {alpha}，滚过去的内容会透出来形成文字重叠"
+    )
+
+
 def test_no_external_resources_in_css_or_js():
     """离线可用：样式和脚本里不能出现外部 URL。"""
     from app.web.paths import STATIC_DIR
@@ -525,11 +616,14 @@ def test_note_markdown_endpoint(client, settings):
 
 
 def test_note_page_renders(client, settings):
-    _make_note(settings, markdown="# 我的标题\n\n正文内容\n")
+    _make_note(settings, title="测试笔记", markdown="# 正文里的一级标题\n\n正文内容\n")
     res = client.get("/notes/note1")
     assert res.status_code == 200
-    assert "我的标题" in res.text
     assert "正文内容" in res.text
+    # 页面顶部显示的是记录标题；正文里那个 `# 一级标题` 会被去掉，
+    # 否则两个标题上下叠着，看着像文字重叠
+    assert "测试笔记" in res.text
+    assert "正文里的一级标题" not in res.text
 
 
 def test_note_page_strips_frontmatter(client, settings):
