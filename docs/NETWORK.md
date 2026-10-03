@@ -15,7 +15,7 @@
 | 2 | `aisubtitle.hdslb.com` | 仅当需要下载字幕时 | 字幕文件的 URL（含 B站签发的 auth_key） | 字幕正文 JSON | `app/bili/client.py` |
 | 3 | `b23.tv` | 仅当你粘贴的是短链 | 短链路径 | HTTP 302 跳转地址 | `app/bili/client.py` |
 | 4 | `*.bilivideo.com`、`*.bcache*.com` 等 B站 CDN | 仅当需要转写音频时 | 音频文件 URL（含 B站签发的签名与时效） | 音频流（m4a） | `app/media/downloader.py`（经 yt-dlp） |
-| 5 | `huggingface.co`、`cdn-lfs*.huggingface.co` | **仅首次**使用转写时 | 模型名称 | Whisper 模型权重文件 | `app/asr/whisper_engine.py`（经 faster-whisper） |
+| 5 | `huggingface.co` 或你配置的镜像（如 `hf-mirror.com`） | **仅首次**下载模型权重 | 模型仓库名 | Whisper 模型文件（约 1.5GB） | `app/asr/model_store.py` |
 | 6 | `127.0.0.1:11434` | 每次生成笔记 | 视频转写全文 | 生成的笔记 JSON | `app/llm/ollama_provider.py` |
 | 7 | 你配置的云端 LLM（默认 `api.deepseek.com`） | **默认关闭**，需 `ALLOW_CLOUD=true` | 视频转写全文 | 生成的笔记 JSON | `app/llm/openai_provider.py` |
 
@@ -26,7 +26,15 @@
 接收的音频与字幕**只保存在本机** `data/` 目录。
 
 **5：模型权重下载。** 只发生在你第一次使用语音转写时，下载完成后即完全离线。
-之后即使断网也能正常转写。模型文件存放在 `data/models/`，随「清除数据」一并删除。
+之后即使断网也能正常转写。模型文件存放在 `data/models/whisper/`，随「清除数据」一并删除。
+
+> **国内网络提示**：实测 huggingface.co **主站可达但文件 CDN 被阻断**——
+> 首页 179ms 响应正常，下载 `model.bin` 却直接超时；而且新版 Xet 传输协议
+> 会卡在 0 字节毫无进展。
+> 因此在 `.env` 里设置 `HF_ENDPOINT=https://hf-mirror.com` 即可切换到镜像
+> （实测 0.3~3 MB/s，1.5GB 模型约 8~80 分钟）。
+> 下载器支持**断点续传**，中途断了不会前功尽弃。
+> 可用 `python -m scripts.doctor` 查看当前生效的端点。
 
 **6：本地模型推理。** 这一条严格说**不是出网**——目标是回环地址，
 数据从未离开你的电脑。列在这里是为了完整性。

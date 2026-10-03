@@ -26,6 +26,7 @@ DOCS_DIR = PROJECT_ROOT / "docs"
 ALLOWED_NETWORK_MODULES: dict[str, str] = {
     "app/bili/client.py": "访问 B站 API 取元数据与字幕",
     "app/media/downloader.py": "经 yt-dlp 下载音频",
+    "app/asr/model_store.py": "下载 Whisper 模型权重（可续传，支持镜像）",
     "app/asr/whisper_engine.py": "首次使用时下载 Whisper 模型权重",
     "app/llm/ollama_provider.py": "调用本机 Ollama（回环地址，数据不出本机）",
     "app/llm/openai_provider.py": "可选的云端模型（默认关闭，需显式授权）",

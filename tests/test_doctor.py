@@ -21,6 +21,7 @@ from scripts.doctor import (
     check_dirs,
     check_disk,
     check_ffmpeg,
+    check_hf_endpoint,
     check_llm_config,
     check_opencc,
     check_python,
@@ -103,6 +104,50 @@ def test_check_cuda_never_raises(settings):
 def test_check_opencc():
     c = check_opencc()
     assert c.status in (OK, WARN)
+
+
+# ---------------------------------------------------------------------------
+# 模型下载通道
+# ---------------------------------------------------------------------------
+
+
+def test_hf_endpoint_warns_when_model_missing_on_official(settings, monkeypatch):
+    """还没下模型又用官方端点 -> 会卡住，必须提前警告。"""
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    settings.hf_endpoint = None
+    settings.models_dir.mkdir(parents=True, exist_ok=True)
+
+    c = check_hf_endpoint(settings)
+    assert c.status == WARN
+    assert "hf-mirror.com" in c.hint
+
+
+def test_hf_endpoint_ok_when_mirror_configured(settings, monkeypatch):
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    settings.hf_endpoint = "https://hf-mirror.com"
+    settings.models_dir.mkdir(parents=True, exist_ok=True)
+
+    c = check_hf_endpoint(settings)
+    assert c.status == OK
+    assert "hf-mirror.com" in c.detail
+
+
+def test_hf_endpoint_ok_when_model_already_cached(settings, monkeypatch):
+    """模型已经在本地了，端点是什么都无所谓。"""
+    monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    settings.hf_endpoint = None
+
+    # 按 model_store 的实际布局造一份"已下载完成"的模型
+    from app.asr.model_store import local_model_dir
+
+    model_dir = local_model_dir(settings, settings.whisper_model)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.json"):
+        (model_dir / name).write_bytes(b"x")
+
+    c = check_hf_endpoint(settings)
+    assert c.status == OK
+    assert "已在本机" in c.detail
 
 
 def test_check_ytdlp_installed():

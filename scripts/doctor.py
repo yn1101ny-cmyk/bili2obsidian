@@ -214,6 +214,32 @@ def check_ffmpeg() -> Check:
     )
 
 
+def check_hf_endpoint(settings: Settings) -> Check:
+    """检查模型下载通道。
+
+    国内直连 HuggingFace 的**主站可达但文件 CDN 被阻断**，
+    如果还没下载过模型又用默认端点，第一次转写必然卡住。
+    """
+    from app.asr.whisper_engine import apply_hf_env, weights_ready
+
+    endpoint = apply_hf_env(settings)
+    is_official = endpoint.rstrip("/") == "https://huggingface.co"
+    cached = weights_ready(settings)
+
+    if cached:
+        return Check("模型下载通道", OK, f"模型已在本机；端点 {endpoint}")
+
+    if is_official:
+        return Check(
+            "模型下载通道",
+            WARN,
+            f"尚未下载模型，当前端点 {endpoint}",
+            "实测国内直连该端点的文件 CDN 会超时（主站能打开也不算数）。"
+            "建议在 .env 设置 HF_ENDPOINT=https://hf-mirror.com 后重试。",
+        )
+    return Check("模型下载通道", OK, f"已配置镜像 {endpoint}（模型尚未下载）")
+
+
 def check_ytdlp() -> Check:
     try:
         import yt_dlp
@@ -373,6 +399,7 @@ async def run_checks(settings: Settings, *, offline: bool) -> Report:
     report.add(check_asr_deps())
     report.add(check_cuda(settings))
     report.add(check_opencc())
+    report.add(check_hf_endpoint(settings))
     report.add(check_ytdlp())
     report.add(check_ffmpeg())
 

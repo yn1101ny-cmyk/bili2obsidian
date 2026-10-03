@@ -35,6 +35,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.asr.model_store import (
+    ensure_model,
+    is_model_ready,
+    local_model_dir,
+)
 from app.config import Settings
 from app.errors import TranscriptionError
 from app.schemas import Transcript, TranscriptSegment, TranscriptSource
@@ -129,6 +134,52 @@ def to_simplified(text: str) -> str:
         return _t2s_converter.convert(text)
     except Exception:  # noqa: BLE001 - 转换失败不该影响主流程
         return text
+
+
+# ---------------------------------------------------------------------------
+# 模型权重下载（HuggingFace 镜像）
+# ---------------------------------------------------------------------------
+
+
+def apply_hf_env(settings: Settings) -> str:
+    """在导入 faster-whisper / huggingface_hub **之前** 设置下载相关环境变量。
+
+    ⚠️ 调用时机很关键：``huggingface_hub`` 只在**模块导入时**读取一次
+    ``HF_ENDPOINT``，之后再改环境变量就无效了。所以必须在
+    ``from faster_whisper import WhisperModel`` 之前调用。
+
+    为什么需要这些设置（均为本机实测）：
+
+    * 国内 **主站可达但文件 CDN 被阻断** —— huggingface.co 首页 179ms 正常，
+      下载 ``model.bin`` 却直接超时；换成 hf-mirror.com 后 2.5 MB/s。
+    * **Xet 传输协议会卡死** —— 开着它下载停在 0 字节数分钟毫无进展，
+      关掉后立刻正常。
+
+    :returns: 最终生效的 HuggingFace 端点
+    """
+    if settings.hf_endpoint:
+        os.environ["HF_ENDPOINT"] = settings.hf_endpoint
+    if settings.hf_disable_xet:
+        # setdefault：允许用户在外部显式改回来
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    # 关掉一堆噪音警告（Windows 无符号链接权限等）
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    logger.debug("HuggingFace 端点：%s", endpoint)
+    return endpoint
+
+
+def download_hint() -> str:
+    """模型下载失败时给出的可执行建议。"""
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    if endpoint.rstrip("/") != "https://huggingface.co":
+        return f"（当前 HuggingFace 端点：{endpoint}，若仍失败可换 https://hf-mirror.com）"
+    return (
+        "如果是下载卡住或超时：国内直连 HuggingFace 的文件 CDN 常被阻断"
+        "（主站能打开也不算数，实测下载 model.bin 会直接超时）。\n"
+        "请在 .env 中设置：HF_ENDPOINT=https://hf-mirror.com 后重试。"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +398,9 @@ class WhisperEngine:
         self._lock = threading.Lock()
         self.device: str = ""
         self.compute_type: str = ""
+        #: 模型下载进度回调 ``(已下载字节, 总字节, 当前文件)``。
+        #: 由上层（流水线）挂上，用来把「正在下载 1.5GB 模型」显示给用户。
+        self.on_download_progress: Any = None
 
     # ------------------------------------------------------------------
     def _load_model(self) -> Any:
@@ -355,6 +409,9 @@ class WhisperEngine:
         with self._lock:
             if self._model is not None:
                 return self._model
+
+            # ⚠️ 必须在导入 faster_whisper 之前设置镜像环境变量
+            endpoint = apply_hf_env(self.settings)
 
             try:
                 from faster_whisper import WhisperModel
@@ -368,16 +425,22 @@ class WhisperEngine:
 
             model_dir = self.settings.models_dir
             model_dir.mkdir(parents=True, exist_ok=True)
+
+            # 先把权重下到可续传的本地目录，再交给 faster-whisper。
+            # 直接让 faster-whisper 自己下的话既不能续传也没有进度，
+            # 在国内镜像上（0.3~3 MB/s 波动）1.5GB 几乎必断。
+            local_path = self._prepare_weights(model_dir)
+
             logger.info(
                 "加载 Whisper 模型 %s（device=%s, compute_type=%s）",
-                self.settings.whisper_model,
+                local_path,
                 device,
                 compute_type,
             )
 
             try:
                 self._model = WhisperModel(
-                    self.settings.whisper_model,
+                    local_path,
                     device=device,
                     compute_type=compute_type,
                     download_root=str(model_dir),
@@ -386,13 +449,14 @@ class WhisperEngine:
                 msg = str(exc)
                 if device == "cpu":
                     raise TranscriptionError(
-                        f"加载 Whisper 模型 {self.settings.whisper_model!r} 失败：{msg}"
+                        f"加载 Whisper 模型 {self.settings.whisper_model!r} 失败：{msg}\n"
+                        f"{download_hint()}"
                     ) from exc
                 # GPU 加载失败 -> 退回 CPU，别让用户卡死
                 logger.warning("GPU 加载模型失败，改用 CPU 重试：%s", msg[:200])
                 try:
                     self._model = WhisperModel(
-                        self.settings.whisper_model,
+                        local_path,
                         device="cpu",
                         compute_type="int8",
                         download_root=str(model_dir),
@@ -401,11 +465,35 @@ class WhisperEngine:
                 except Exception as cpu_exc:  # noqa: BLE001
                     raise TranscriptionError(
                         f"加载 Whisper 模型失败。\nGPU 错误：{msg[:300]}\n"
-                        f"CPU 错误：{cpu_exc}"
+                        f"CPU 错误：{cpu_exc}\n{download_hint()}"
                     ) from cpu_exc
 
             self._batched = self._make_batched(self._model)
             return self._model
+
+    def _prepare_weights(self, model_dir: Path) -> str:
+        """准备模型权重路径，返回可交给 WhisperModel 的字符串。
+
+        * 若配置的是已存在的本地目录，直接用；
+        * 否则按别名 / ``owner/repo`` 下载到本机（可续传）。
+        """
+        configured = self.settings.whisper_model
+        as_path = Path(configured)
+        if as_path.is_dir():
+            logger.info("使用本地模型目录：%s", as_path)
+            return str(as_path)
+
+        if is_model_ready(self.settings, configured):
+            return str(local_model_dir(self.settings, configured))
+
+        logger.info("模型权重不在本机，开始下载（支持断点续传）…")
+        return str(
+            ensure_model(
+                self.settings,
+                configured,
+                on_progress=self.on_download_progress,
+            )
+        )
 
     def _make_batched(self, model: Any) -> Any:
         """尝试构造批处理推理管道（可提速 3-5 倍）。失败则返回 None。"""
@@ -551,21 +639,27 @@ class WhisperEngine:
             return False, str(exc)
 
         label = "GPU (CUDA)" if device == "cuda" else "CPU"
-        model_dir = self.settings.models_dir
-        cached = _model_cached(model_dir, self.settings.whisper_model)
+        cached = weights_ready(self.settings)
+        endpoint = self.settings.hf_endpoint or os.environ.get(
+            "HF_ENDPOINT", "https://huggingface.co"
+        )
         return True, (
             f"{label} 转写就绪，模型 {self.settings.whisper_model}"
             f"（compute_type={compute_type}），{opencc_ok}；"
-            + ("模型已下载到本机" if cached else "首次运行时会下载模型权重")
+            + (
+                "模型已下载到本机"
+                if cached
+                else f"首次运行时会从 {endpoint} 下载模型权重"
+            )
         )
 
 
-def _model_cached(models_dir: Path, model_name: str) -> bool:
-    """粗略判断模型是否已下载到本地。"""
-    if not models_dir.exists():
-        return False
-    needle = model_name.split("/")[-1].lower()
-    for child in models_dir.iterdir():
-        if child.is_dir() and (needle in child.name.lower() or "whisper" in child.name.lower()):
+def weights_ready(settings: Settings) -> bool:
+    """模型权重是否已在本机（或配置的就是本地目录）。"""
+    configured = settings.whisper_model
+    try:
+        if Path(configured).is_dir():
             return True
-    return False
+        return is_model_ready(settings, configured)
+    except TranscriptionError:
+        return False
