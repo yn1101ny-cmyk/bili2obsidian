@@ -24,7 +24,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from app.asr.whisper_engine import WhisperEngine
+from app.asr.whisper_engine import WhisperEngine, build_hotwords
 from app.bili.client import BiliClient
 from app.bili.urls import parse_video_input
 from app.config import Settings
@@ -288,8 +288,18 @@ class NotePipeline:
 
         check_cancel()
         report(JobStage.TRANSCRIBING, 0.34, "正在本地转写语音（较慢，请稍候）…")
+        # 把标题/标签作为热词注入，纠正专有名词的同音字错误
+        # （实测：标题里的「刹帝利」被听成「差跌力」）
+        hotwords = build_hotwords(
+            title=meta.title,
+            part_title=meta.part_title,
+            owner=meta.owner_name,
+            tags=meta.tags,
+        )
         try:
-            transcript = await asyncio.to_thread(self._asr.transcribe, audio_path)
+            transcript = await asyncio.to_thread(
+                self._asr.transcribe, audio_path, hotwords=hotwords or None
+            )
         finally:
             # 转写完成立刻释放显存，把空间让给后续的本地大模型
             self._asr.unload()

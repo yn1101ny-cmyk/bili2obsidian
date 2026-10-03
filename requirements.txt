@@ -25,6 +25,12 @@ faster-whisper>=1.2.1
 #: ⚠️ 4.6.3 是首个用 CUDA 12.8 构建的版本，也是首个真正支持
 #: Blackwell(RTX 50 系, sm_120) 的版本。低于它会报 no kernel image。
 ctranslate2>=4.6.3
+#: ⚠️ 必须钉住 <19！
+#: faster-whisper 1.2.1 调用 av.open(..., metadata_errors="ignore")，
+#: 而 PyAV 19 移除了这个参数，直接报
+#: TypeError: open() got an unexpected keyword argument 'metadata_errors'。
+#: faster-whisper 自己只写了 av>=11、没设上界，属于上游打包疏漏。
+av>=11,<19
 imageio-ffmpeg>=0.5.1
 #: Whisper 中文常输出繁体，OpenCC 的 t2s 是确定性兜底
 opencc-python-reimplemented>=0.1.7

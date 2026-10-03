@@ -32,6 +32,7 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -63,8 +64,7 @@ _GPU_FALLBACK_MARKERS = (
 )
 
 #: 这些参数在部分 faster-whisper 版本上可能不存在，运行时按签名过滤
-_CANDIDATE_PARAMS: dict[str, Any] = {
-    "beam_size": 5,
+_CANDIDATE_PARAMS: dict[str, Any] = {    "beam_size": 5,
     "best_of": 5,
     "patience": 1.0,
     "length_penalty": 1.0,
@@ -187,6 +187,38 @@ def download_hint() -> str:
 # ---------------------------------------------------------------------------
 
 
+def build_hotwords(
+    *,
+    title: str = "",
+    part_title: str = "",
+    owner: str = "",
+    tags: Sequence[str] = (),
+    limit: int = 160,
+) -> str:
+    """把视频标题/标签整理成 Whisper 的热词提示。
+
+    **实测动机**：转写《青椒虽小…万代 MGSD 刹帝利 高达拼装模型》时，
+    模型把「刹帝利」听成了「差跌力」「XD」「差跌力」。而正确答案
+    就写在标题里 —— 把标题作为热词喂进去能直接纠正这一类错误。
+
+    专有名词（人名、型号、术语）是中文 ASR 最容易出错的地方，
+    而视频元数据恰好免费提供了这些词，没有理由不用。
+    """
+    parts: list[str] = []
+    for candidate in (title, part_title, owner, *(tags or ())):
+        text = (candidate or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    return " ".join(parts)[:limit]
+
+
+#: ``os.add_dll_directory`` 返回的句柄**必须一直持有** ——
+#: 一旦被垃圾回收，该目录会立刻从 DLL 搜索路径中移除。
+#: 这是 Python 上非常容易踩的坑：``os.add_dll_directory(p)`` 这种写法
+#: 返回值没人引用，下一秒就被回收，等同于什么都没做。
+_DLL_DIR_HANDLES: list[Any] = []
+
+
 def setup_cuda_dll_paths() -> list[str]:
     """把 CUDA / cuDNN 运行库目录加入 Windows DLL 搜索路径。
 
@@ -253,7 +285,9 @@ def setup_cuda_dll_paths() -> list[str]:
             continue
         seen.add(key)
         try:
-            os.add_dll_directory(str(path))
+            # ⚠️ 必须把返回的句柄存起来！丢掉引用 = 目录立刻失效
+            handle = os.add_dll_directory(str(path))
+            _DLL_DIR_HANDLES.append(handle)
         except (OSError, AttributeError) as exc:
             logger.debug("add_dll_directory 失败 %s：%s", path, exc)
             continue
@@ -510,11 +544,11 @@ class WhisperEngine:
             return None
 
     # ------------------------------------------------------------------
-    def _build_kwargs(self, *, batched: bool) -> dict[str, Any]:
+    def _build_kwargs(self, *, batched: bool, hotwords: str | None = None) -> dict[str, Any]:
         """按目标函数的真实签名筛出可用参数。
 
-        不同 faster-whisper 版本的参数集有差异（如 repetition_penalty、
-        no_repeat_ngram_size 是否支持），按签名过滤比硬编码更稳。
+        不同 faster-whisper 版本的参数集有差异（如 hotwords、
+        repetition_penalty 是否支持），按签名过滤比硬编码更稳。
         """
         target = self._batched.transcribe if batched else self._model.transcribe
         try:
@@ -528,6 +562,8 @@ class WhisperEngine:
 
         kwargs["language"] = self.settings.whisper_language or None
         kwargs["initial_prompt"] = self.settings.whisper_initial_prompt or None
+        if hotwords and "hotwords" in allowed:
+            kwargs["hotwords"] = hotwords
         if "beam_size" in allowed:
             kwargs["beam_size"] = self.settings.whisper_beam_size
         if batched and "batch_size" in allowed:
@@ -535,8 +571,17 @@ class WhisperEngine:
         return kwargs
 
     # ------------------------------------------------------------------
-    def transcribe(self, audio_path: str | Path) -> Transcript:
-        """把音频文件转写成带时间戳的文本。"""
+    def transcribe(
+        self,
+        audio_path: str | Path,
+        *,
+        hotwords: str | None = None,
+    ) -> Transcript:
+        """把音频文件转写成带时间戳的文本。
+
+        :param hotwords: 专有名词提示（通常由视频标题/标签生成）。
+            能显著减少人名、型号、术语的同音字错误。
+        """
         path = Path(audio_path)
         if not path.exists():
             raise TranscriptionError(f"音频文件不存在：{path}")
@@ -546,7 +591,7 @@ class WhisperEngine:
         model = self._load_model()
         started = time.time()
 
-        segments_iter, info = self._run(path)
+        segments_iter, info = self._run(path, hotwords=hotwords)
         raw_segments = [
             TranscriptSegment(
                 start=float(getattr(seg, "start", 0.0)),
@@ -581,7 +626,7 @@ class WhisperEngine:
             ),
         )
 
-    def _run(self, path: Path) -> tuple[Any, Any]:
+    def _run(self, path: Path, *, hotwords: str | None = None) -> tuple[Any, Any]:
         """执行转写，批处理失败时自动退回逐段。"""
         attempts: list[tuple[str, bool]] = []
         if self._batched is not None:
@@ -591,9 +636,13 @@ class WhisperEngine:
         last_error: Exception | None = None
         for label, batched in attempts:
             target = self._batched if batched else self._model
-            kwargs = self._build_kwargs(batched=batched)
+            kwargs = self._build_kwargs(batched=batched, hotwords=hotwords)
             try:
-                logger.info("开始转写（%s模式）…", label)
+                logger.info(
+                    "开始转写（%s模式%s）…",
+                    label,
+                    "，已注入热词" if kwargs.get("hotwords") else "",
+                )
                 return target.transcribe(str(path), **kwargs)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc

@@ -22,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.asr.whisper_engine import WhisperEngine  # noqa: E402
+from app.asr.whisper_engine import WhisperEngine, build_hotwords  # noqa: E402
 from app.bili.client import BiliClient  # noqa: E402
 from app.bili.subtitles import merge_adjacent_segments  # noqa: E402
 from app.bili.urls import parse_video_input  # noqa: E402
@@ -113,9 +113,19 @@ async def run(url: str, *, force: bool, save: bool) -> int:
 
         print("→ 加载模型并转写（首次会下载约 1.6GB 权重，请耐心）…")
         engine = WhisperEngine(settings)
+        hotwords = build_hotwords(
+            title=meta.title,
+            part_title=meta.part_title,
+            owner=meta.owner_name,
+            tags=meta.tags,
+        )
+        if hotwords:
+            print(f"  热词：{hotwords[:100]}")
         try:
             t0 = time.time()
-            transcript = await asyncio.to_thread(engine.transcribe, audio)
+            transcript = await asyncio.to_thread(
+                engine.transcribe, audio, hotwords=hotwords or None
+            )
             elapsed = time.time() - t0
         finally:
             engine.unload()

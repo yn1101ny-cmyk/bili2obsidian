@@ -11,10 +11,13 @@ import os
 import pytest
 
 from app.asr.whisper_engine import (
+    _DLL_DIR_HANDLES,
     apply_hf_env,
+    build_hotwords,
     detect_device,
     download_hint,
     resolve_compute_type,
+    setup_cuda_dll_paths,
     supported_compute_types,
     to_simplified,
 )
@@ -173,3 +176,71 @@ def test_to_simplified_keeps_simplified_unchanged():
 
 def test_to_simplified_keeps_latin():
     assert to_simplified("hello world 123") == "hello world 123"
+
+
+# ---------------------------------------------------------------------------
+# 热词（专有名词纠错）
+# ---------------------------------------------------------------------------
+
+
+def test_build_hotwords_joins_title_and_tags():
+    text = build_hotwords(title="刹帝利 拼装模型", tags=["高达", "MGSD"])
+    assert "刹帝利" in text
+    assert "高达" in text
+    assert "MGSD" in text
+
+
+def test_build_hotwords_includes_owner_and_part():
+    text = build_hotwords(title="标题", part_title="第一讲", owner="某UP")
+    assert "标题" in text
+    assert "第一讲" in text
+    assert "某UP" in text
+
+
+def test_build_hotwords_deduplicates():
+    text = build_hotwords(title="高达", part_title="高达", tags=["高达"])
+    assert text == "高达"
+
+
+def test_build_hotwords_skips_blank_entries():
+    text = build_hotwords(title="真标题", part_title="", owner="   ", tags=["", "  "])
+    assert text == "真标题"
+
+
+def test_build_hotwords_respects_limit():
+    text = build_hotwords(title="字" * 500, limit=160)
+    assert len(text) == 160
+
+
+def test_build_hotwords_empty_when_nothing_given():
+    assert build_hotwords() == ""
+
+
+def test_build_hotwords_handles_none_tags():
+    assert build_hotwords(title="标题", tags=None) == "标题"  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# CUDA DLL 句柄存活（很容易再犯的回归）
+# ---------------------------------------------------------------------------
+
+
+def test_cuda_dll_handles_are_retained():
+    """⛔ 回归守卫。
+
+    ``os.add_dll_directory`` 返回的句柄一旦被垃圾回收，
+    该目录就会立刻从 DLL 搜索路径移除 —— 等同于什么都没做。
+    所以必须把句柄存进模块级列表。
+    """
+    added = setup_cuda_dll_paths()
+    if not added:
+        pytest.skip("本机没有额外的 CUDA DLL 目录（非 Windows 或未装 nvidia-* 包）")
+    assert len(_DLL_DIR_HANDLES) >= len(added), (
+        "add_dll_directory 的返回值没被持有，CUDA 库会加载失败"
+    )
+
+
+def test_setup_cuda_dll_paths_is_idempotent():
+    first = setup_cuda_dll_paths()
+    second = setup_cuda_dll_paths()
+    assert second == first or len(second) <= len(first)
