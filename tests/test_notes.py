@@ -136,6 +136,101 @@ def test_to_note_handles_uncertainty_dicts():
 
 
 # ---------------------------------------------------------------------------
+# 去重与限量（实测模型会凑字数）
+# ---------------------------------------------------------------------------
+
+
+def test_to_note_dedups_concepts():
+    raw = {
+        "title": "t",
+        "concepts": [
+            {"term": "MGSD", "explanation": "系列"},
+            {"term": "mgsd ", "explanation": "重复"},
+            {"term": "MGSD系列", "explanation": "另一个"},
+        ],
+    }
+    note = to_note(raw)
+    assert len(note.concepts) == 2  # "MGSD" 与 "mgsd " 视为同一个
+
+
+def test_to_note_dedups_supplements():
+    raw = {
+        "title": "t",
+        "supplements": [
+            {"topic": "千套分件", "content": "A"},
+            {"topic": "千套分件", "content": "B"},
+        ],
+    }
+    assert len(to_note(raw).supplements) == 1
+
+
+def test_to_note_supplements_do_not_repeat_concepts():
+    """实测常见毛病：同一个词在「关键概念」和「补充背景」里各写一遍。"""
+    raw = {
+        "title": "t",
+        "concepts": [{"term": "精神力感应框架", "explanation": "驾驶舱装置"}],
+        "supplements": [
+            {"topic": "精神力感应框架", "why": "重复了", "content": "同上"},
+            {"topic": "浮游炮", "why": "确实需要", "content": "隐藏武器"},
+        ],
+    }
+    note = to_note(raw)
+    assert [s.topic for s in note.supplements] == ["浮游炮"]
+
+
+def test_to_note_caps_uncertainties():
+    raw = {
+        "title": "t",
+        "uncertainties": [{"item": f"问题{i}", "reason": "r"} for i in range(20)],
+    }
+    assert len(to_note(raw).uncertainties) <= 5
+
+
+def test_to_note_caps_key_points():
+    raw = {
+        "title": "t",
+        "key_points": [{"title": f"要点{i}", "detail": "d"} for i in range(30)],
+    }
+    assert len(to_note(raw).key_points) <= 12
+
+
+def test_to_note_caps_supplements():
+    raw = {
+        "title": "t",
+        "supplements": [{"topic": f"主题{i}", "content": "c"} for i in range(20)],
+    }
+    assert len(to_note(raw).supplements) <= 5
+
+
+def test_to_note_caps_concepts():
+    raw = {
+        "title": "t",
+        "concepts": [{"term": f"术语{i}", "explanation": "e"} for i in range(20)],
+    }
+    assert len(to_note(raw).concepts) <= 8
+
+
+def test_to_note_parses_string_timestamps():
+    """schema 里 timestamp 是 "mm:ss" 字符串，必须能正确转成秒。"""
+    raw = {
+        "title": "t",
+        "outline": [{"timestamp": "12:34", "heading": "h", "summary": "s"}],
+        "key_points": [{"title": "t", "detail": "d", "timestamp": "01:30"}],
+    }
+    note = to_note(raw)
+    assert note.outline[0].timestamp == pytest.approx(754.0)
+    assert note.key_points[0].timestamp == pytest.approx(90.0)
+
+
+def test_to_note_accepts_null_timestamps():
+    raw = {
+        "title": "t",
+        "key_points": [{"title": "t", "detail": "d", "timestamp": None}],
+    }
+    assert to_note(raw).key_points[0].timestamp is None
+
+
+# ---------------------------------------------------------------------------
 # 模型输出 -> PartialNotes
 # ---------------------------------------------------------------------------
 

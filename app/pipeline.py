@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 
 from app.asr.whisper_engine import WhisperEngine, build_hotwords
 from app.bili.client import BiliClient
+from app.bili.subtitles import merge_adjacent_segments
 from app.bili.urls import parse_video_input
 from app.config import Settings
 from app.errors import MyNoteError, NoTranscriptAvailable
@@ -67,6 +68,23 @@ class RunResult:
 
 class Cancelled(MyNoteError):
     """用户主动取消了任务。"""
+
+
+def merge_for_notes(transcript: Transcript) -> Transcript:
+    """把碎句合并成可读段落，供笔记生成使用。
+
+    B站 AI 字幕和 Whisper 都会产出很短的片段（几个字一条）。
+    直接喂给模型会导致语义割裂、浪费上下文窗口；
+    合并后模型看到的是完整句子，写出的要点明显更连贯。
+    时间戳保留每段的首句，定位依然准确。
+    """
+    if len(transcript.segments) < 2:
+        return transcript
+    merged = merge_adjacent_segments(transcript.segments)
+    if len(merged) >= len(transcript.segments):
+        return transcript
+    logger.info("合并碎句：%d -> %d 段", len(transcript.segments), len(merged))
+    return transcript.model_copy(update={"segments": merged})
 
 
 class NotePipeline:
@@ -150,6 +168,11 @@ class NotePipeline:
             )
 
         check_cancel()
+
+        # 无论转写来自缓存还是刚刚生成，都统一合并一次碎句再喂给模型。
+        # 放在使用点而不是只放在保存点，是为了让改动前存下的旧缓存
+        # 也能享受到同样的处理（merge_for_notes 是幂等的）。
+        transcript = merge_for_notes(transcript)
 
         # ---------------- 4. 生成笔记 ----------------
         report(JobStage.SUMMARIZING, 0.62, "正在加载本地模型…")
@@ -259,6 +282,7 @@ class NotePipeline:
         if meta.aid is not None and cid:
             transcript = await bili.try_get_subtitle(meta.aid, cid)
             if transcript is not None and not transcript.is_empty():
+                transcript = merge_for_notes(transcript)
                 self.db.save_transcript(meta.bvid, page, cid, transcript)
                 notices.append(
                     f"✅ 直接使用了 B站的字幕（{transcript.source.label}），未做语音转写。"
@@ -309,6 +333,7 @@ class NotePipeline:
                 "转写结果为空：可能是纯音乐视频或无人声内容。"
             )
 
+        transcript = merge_for_notes(transcript)
         notices.append(f"🎧 已用本地 Whisper 转写完成（{transcript.note}）。")
         self.db.save_transcript(meta.bvid, page, cid, transcript)
         return transcript

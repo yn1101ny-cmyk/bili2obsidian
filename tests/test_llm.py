@@ -208,6 +208,34 @@ def test_flatten_schema_drops_descriptions_to_save_tokens():
     assert "description" not in schema
 
 
+def test_flatten_schema_asks_for_string_timestamps():
+    """⛔ 回归守卫。
+
+    实测教训：要求模型把 [mm:ss] 换算成秒数时，它会给出 2/3/8/12 这种
+    与原文完全对不上的小数字（20 分钟的视频，大纲时间点全落在前 30 秒）。
+    「原样抄写标记」才是模型擅长的，所以 schema 里必须是 string。
+    """
+    schema = flatten_schema(Note)
+
+    outline_ts = schema["properties"]["outline"]["items"]["properties"]["timestamp"]
+    assert "string" in json.dumps(outline_ts), outline_ts
+    assert "number" not in json.dumps(outline_ts), outline_ts
+
+
+def test_flatten_schema_timestamp_override_keeps_nullable():
+    """仍然允许 null（找不到对应时间点的情况）。"""
+    schema = flatten_schema(Note)
+    kp_ts = schema["properties"]["key_points"]["items"]["properties"]["timestamp"]
+    assert "null" in json.dumps(kp_ts)
+
+
+def test_flatten_schema_other_numeric_fields_untouched():
+    """只覆盖 timestamp，别的字段类型不能被动到。"""
+    schema = flatten_schema(Note)
+    outline = schema["properties"]["outline"]["items"]["properties"]
+    assert outline["heading"]["type"] == "string"
+
+
 def test_flatten_schema_partial_notes():
     schema = flatten_schema(PartialNotes)
     assert schema["type"] == "object"
