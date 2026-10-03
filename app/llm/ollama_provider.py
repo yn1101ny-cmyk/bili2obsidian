@@ -40,12 +40,14 @@ class OllamaProvider(LLMProvider):
         model: str = "qwen3:8b",
         timeout: float = 600.0,
         num_ctx: int = 8192,
+        num_predict: int = 4096,
         think: bool = False,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.num_ctx = num_ctx
+        self.num_predict = num_predict
         self.think = think
         self.name = f"Ollama/{model}"
         self.is_remote = not _is_loopback(self.base_url)
@@ -84,6 +86,12 @@ class OllamaProvider(LLMProvider):
             "options": {
                 "temperature": temperature,
                 "num_ctx": self.num_ctx,
+                # ⚠️ 必须设上限。不设的话生成长度只受 num_ctx 约束，
+                # 小模型一旦陷入重复就会一直吐到吃满上下文，
+                # 表现就是「跑了十分钟然后超时」——既慢又没有任何产出。
+                # 有了它，最坏情况变成「很快返回一段被截断的内容」，
+                # 而截断的内容至少还能被解析出部分结果。
+                "num_predict": self.num_predict,
             },
         }
         # format 传 JSON Schema 可让 Ollama 用语法约束解码，输出结构更可靠

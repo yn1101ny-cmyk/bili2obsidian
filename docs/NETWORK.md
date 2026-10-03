@@ -14,16 +14,32 @@
 | 1 | `api.bilibili.com` | 每次生成笔记 | 视频 BV/av 号、cid（**以及可选的 SESSDATA，仅当你配置了它**） | 视频标题、UP主、时长、分P、标签 | `app/bili/client.py` |
 | 2 | `aisubtitle.hdslb.com` | 仅当需要下载字幕时 | 字幕文件的 URL（含 B站签发的 auth_key） | 字幕正文 JSON | `app/bili/client.py` |
 | 3 | `b23.tv` | 仅当你粘贴的是短链 | 短链路径 | HTTP 302 跳转地址 | `app/bili/client.py` |
-| 4 | `*.bilivideo.com`、`*.bcache*.com` 等 B站 CDN | 仅当需要转写音频时 | 音频文件 URL（含 B站签发的签名与时效） | 音频流（m4a） | `app/media/downloader.py`（经 yt-dlp） |
+| 4 | `*.bilivideo.com`、`*.bcache*.com` 等 B站 CDN | 需要转写音频时（音频流）；`VISION_ENABLED=true` 时（低清视频流） | 音频/视频文件 URL（含 B站签发的签名与时效） | 音频流（m4a）与低清视频流（≤480p mp4） | `app/media/downloader.py`（经 yt-dlp） |
 | 5 | `huggingface.co` 或你配置的镜像（如 `hf-mirror.com`） | **仅首次**下载模型权重 | 模型仓库名 | Whisper 模型文件（约 1.5GB） | `app/asr/model_store.py` |
 | 6 | `127.0.0.1:11434` | 每次生成笔记 | 视频转写全文 | 生成的笔记 JSON | `app/llm/ollama_provider.py` |
 | 7 | 你配置的云端 LLM（默认 `api.deepseek.com`） | **默认关闭**，需 `ALLOW_CLOUD=true` | 视频转写全文 | 生成的笔记 JSON | `app/llm/openai_provider.py` |
 
+> **没有第 8 项，这是刻意的。** OCR（`app/vision/`）用到的 RapidOCR / 
+> ONNXRuntime / OpenCV **全部在本地推理**，模型文件随 wheel 提供。
+> 实测把 `HTTP_PROXY`/`HTTPS_PROXY` 指向死端口（`127.0.0.1:9`）后
+> 依然能正常识别 —— 即这条链路上确实零网络请求。
+> 之所以仍把它列入自动化守卫（`tests/test_privacy.py`），是因为
+> **rapidocr 本身带有模型下载逻辑**；列进去意味着「我们知道它有这个能力，
+> 并且显式确认过默认路径不会触发」。
+
 ### 逐条说明
 
-**1–4：与 B站的交互。** 目的是获取视频信息、字幕与音频，这是产品的功能前提。
+**1–4：与 B站的交互。** 目的是获取视频信息、字幕、音频，以及（可选的）低清视频，
+这是产品的功能前提。
 发送的都是视频标识符；除非你主动配置 `BILI_SESSDATA`，否则不发送任何账号凭据。
-接收的音频与字幕**只保存在本机** `data/` 目录。
+实测**下载 ≤480p 视频不需要登录态** —— 所以画面识别这条链路
+不会要求你交出 B站 cookie。
+接收的音频、视频与字幕**只保存在本机** `data/` 目录。
+
+**4 的另一半：低清视频。** 只有在 `VISION_ENABLED=true`（默认开）且装了
+RapidOCR 时才会触发，目的是抽帧识别画面上的文字。
+分辨率限制在 480p 以内，20 分钟视频约 40~60MB。
+关掉 `VISION_ENABLED` 就完全不会下视频。
 
 **5：模型权重下载。** 只发生在你第一次使用语音转写时，下载完成后即完全离线。
 之后即使断网也能正常转写。模型文件存放在 `data/models/whisper/`，随「清除数据」一并删除。

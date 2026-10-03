@@ -24,12 +24,17 @@ DOCS_DIR = PROJECT_ROOT / "docs"
 #: 唯一被允许发起网络请求的模块，以及理由。
 #: 新增出网点必须同时改这里和 docs/NETWORK.md。
 ALLOWED_NETWORK_MODULES: dict[str, str] = {
-    "app/bili/client.py": "访问 B站 API 取元数据与字幕",
-    "app/media/downloader.py": "经 yt-dlp 下载音频",
+    "app/bili/client.py": "访问 B站 API 取元数据、章节与字幕",
+    "app/media/downloader.py": "经 yt-dlp 下载音频，以及（画面识别用）低清视频",
     "app/asr/model_store.py": "下载 Whisper 模型权重（可续传，支持镜像）",
     "app/asr/whisper_engine.py": "首次使用时下载 Whisper 模型权重",
     "app/llm/ollama_provider.py": "调用本机 Ollama（回环地址，数据不出本机）",
     "app/llm/openai_provider.py": "可选的云端模型（默认关闭，需显式授权）",
+    # ⚠️ 这条是**显式确认**，不是「它在联网」：
+    # rapidocr 的模型（约 36MB）打包在 wheel 里，实测把代理指向死端口仍正常识别，
+    # 即默认路径零网络请求。列进来是因为该库**自带模型下载逻辑** ——
+    # 一旦将来它的行为变了，这条守卫能让我们看见，而不是悄悄联网。
+    "app/vision/ocr.py": "RapidOCR 本地推理；模型随 wheel 提供，默认路径不联网",
 }
 
 #: 能发起网络通信的库
@@ -45,6 +50,11 @@ NETWORK_MODULES: tuple[str, ...] = (
     "yt_dlp",
     "faster_whisper",
     "huggingface_hub",
+    # 自带模型下载能力的本地推理库（见 ALLOWED_NETWORK_MODULES 的说明）
+    "rapidocr",
+    # B站 下载用的浏览器指纹库；虽然目前只被 yt-dlp 间接使用，
+    # 但它是实打实的网络库，列进监控范围以防将来被直接引用
+    "curl_cffi",
 )
 
 #: 明确禁止的遥测/分析/崩溃上报类库
@@ -132,6 +142,74 @@ def test_the_scan_actually_finds_network_imports():
     """防止扫描逻辑本身失效（比如 ast 用错）导致测试永远通过。"""
     client = APP_DIR / "bili" / "client.py"
     assert _network_imports(client), "扫描没能发现 client.py 里的 httpx，扫描逻辑有问题"
+
+
+def test_scan_catches_capable_but_unused_libraries():
+    """扫描要能发现「有下载能力」的库，哪怕当前用的是默认离线路径。"""
+    ocr = APP_DIR / "vision" / "ocr.py"
+    assert "rapidocr" in _network_imports(ocr), (
+        "vision/ocr.py 引用了 rapidocr，扫描却没发现 —— "
+        "这说明监控列表漏了它"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 1b. OCR 必须完全离线（模型随包，不运行时下载）
+# ---------------------------------------------------------------------------
+
+
+def test_rapidocr_ships_its_models():
+    """⛔ 隐私红线：OCR 模型必须**随 wheel 提供**，不能运行时下载。
+
+    这是「画面识别不破坏本地优先承诺」的硬证据。
+    手工验证过一次（把 HTTP(S)_PROXY 指向死端口 127.0.0.1:9 仍能正常识别），
+    这里再把它固化成断言：模型文件确实躺在 site-packages 里。
+    """
+    try:
+        import rapidocr
+    except ImportError:
+        pytest.skip("未安装 rapidocr（画面识别为可选功能）")
+
+    package_dir = Path(rapidocr.__file__).parent
+    models_dir = package_dir / "models"
+    assert models_dir.is_dir(), (
+        f"rapidocr 没有自带 models 目录（{models_dir}）——"
+        "这意味着模型会在运行时从网络下载，违反本地优先承诺"
+    )
+
+    onnx_files = sorted(models_dir.glob("*.onnx"))
+    assert len(onnx_files) >= 3, (
+        f"打包的模型文件不足（只找到 {[p.name for p in onnx_files]}）。"
+        "det / rec / cls 三个模型应当都在包里"
+    )
+
+
+def test_vision_modules_do_not_import_http_clients():
+    """画面识别这条链路上不该出现任何 HTTP 客户端。
+
+    rapidocr 是唯一被显式确认的例外（它自带下载逻辑但默认不触发）。
+    """
+    http_clients = (
+        "httpx", "requests", "aiohttp", "urllib.request", "http.client", "socket",
+    )
+    for path in sorted((APP_DIR / "vision").rglob("*.py")):
+        for name in _all_imports(path):
+            assert not _matches(name, http_clients), (
+                f"{_rel(path)} 引入了 HTTP 客户端 {name} —— "
+                "画面识别必须是纯本地的"
+            )
+
+
+def test_vision_reads_no_env_proxy_workarounds():
+    """确认我们**没有**为了「看起来离线」而偷偷改代理设置。"""
+    from app.vision import ocr as ocr_module
+
+    source = Path(ocr_module.__file__).read_text(encoding="utf-8")
+    for suspicious in ("HTTP_PROXY", "HTTPS_PROXY", "no_proxy", "NO_PROXY"):
+        assert suspicious not in source, (
+            f"vision/ocr.py 里出现了 {suspicious} —— "
+            "离线应当是模型的固有属性，而不是靠改环境变量伪装出来的"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -152,6 +152,16 @@ class Settings(BaseSettings):
     #: 现在改成按体量做中间归并，同时把窗口提到 16384 留出余量。
     llm_num_ctx: int = Field(default=16384, ge=2048, le=131072)
 
+    #: ⚠️ 单次生成的最大 token 数。**不要设为 -1（表示不限）**。
+    #:
+    #: 不设上限时，生成长度只受 ``num_ctx`` 约束 —— 小模型一旦陷入重复
+    #: 就会一直吐到吃满上下文，实测表现是「跑了十分钟然后超时」：
+    #: 既慢，又拿不到任何产出。
+    #:
+    #: 有了上限，最坏情况变成「很快返回一段被截断的内容」，
+    #: 而截断的 JSON 通常还能被解析出部分结果，好过彻底失败。
+    llm_num_predict: int = Field(default=4096, ge=256, le=32768)
+
     #: 以下三项只在 allow_cloud=True 时才会被使用
     allow_cloud: bool = False
     openai_base_url: str = "https://api.deepseek.com/v1"

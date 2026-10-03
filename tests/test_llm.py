@@ -309,6 +309,43 @@ async def test_ollama_sends_json_format_and_schema():
 
 
 @respx.mock
+async def test_ollama_always_caps_generation_length():
+    """⛔ 回归守卫：必须发 num_predict，不能让生成无上限。
+
+    实测教训：不设上限时生成长度只受 num_ctx 约束，小模型一旦陷入重复
+    就会一直吐到吃满上下文 —— 表现是「跑了十分钟然后超时」，
+    既慢又拿不到任何产出。有了上限，最坏情况变成「很快返回被截断的内容」，
+    而截断的 JSON 通常还能解析出部分结果。
+    """
+    route = respx.post(f"{OLLAMA}/api/chat").mock(
+        return_value=httpx.Response(200, json={"message": {"content": "{}"}})
+    )
+    p = OllamaProvider(base_url=OLLAMA, model="m")
+    try:
+        await p.complete_json(system="s", user="u")
+    finally:
+        await p.aclose()
+
+    options = json.loads(route.calls[0].request.content)["options"]
+    assert "num_predict" in options, "没有发送 num_predict，生成长度不受限"
+    assert options["num_predict"] > 0, "num_predict 必须是个正数上限"
+    assert "num_ctx" in options
+
+
+@respx.mock
+async def test_ollama_num_predict_is_configurable():
+    route = respx.post(f"{OLLAMA}/api/chat").mock(
+        return_value=httpx.Response(200, json={"message": {"content": "{}"}})
+    )
+    p = OllamaProvider(base_url=OLLAMA, model="m", num_predict=1234)
+    try:
+        await p.complete_json(system="s", user="u")
+    finally:
+        await p.aclose()
+    assert json.loads(route.calls[0].request.content)["options"]["num_predict"] == 1234
+
+
+@respx.mock
 async def test_ollama_falls_back_to_json_mode_without_schema():
     route = respx.post(f"{OLLAMA}/api/chat").mock(
         return_value=httpx.Response(200, json={"message": {"content": "{}"}})
