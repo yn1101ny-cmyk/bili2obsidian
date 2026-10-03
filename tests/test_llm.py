@@ -229,6 +229,34 @@ def test_flatten_schema_timestamp_override_keeps_nullable():
     assert "null" in json.dumps(kp_ts)
 
 
+def test_flatten_schema_required_excludes_nullable_fields():
+    """⛔ 回归守卫。
+
+    曾经把全部字段都设为必填，结果模型对 example / timestamp 这类
+    本可留空的字段无话可说，只好复读术语凑数 ——
+    产出过「举个例子：UC纪元」这种废话。允许为空反而更诚实。
+    """
+    schema = flatten_schema(Note)
+    required = set(schema["required"])
+
+    # 可空字段不应被强制要求
+    assert "example" not in required
+    # 但关键小节必须仍然必填，否则模型会整节省略
+    for field in ("title", "one_liner", "summary", "outline", "key_points"):
+        assert field in required, field
+
+
+def test_flatten_schema_nested_nullable_fields_not_required():
+    schema = flatten_schema(Note)
+    kp = schema["properties"]["key_points"]["items"]
+    assert "timestamp" not in kp["required"]
+    assert "title" in kp["required"]
+
+    concept = schema["properties"]["concepts"]["items"]
+    assert "example" not in concept["required"]
+    assert "term" in concept["required"]
+
+
 def test_flatten_schema_other_numeric_fields_untouched():
     """只覆盖 timestamp，别的字段类型不能被动到。"""
     schema = flatten_schema(Note)

@@ -208,8 +208,20 @@ def test_video_sourced_items_marked_as_video(note, meta, transcript):
 
 def test_supplements_marked_as_model_generated(note, meta, transcript):
     md = render_note_markdown(note, meta, transcript)
-    assert "以下内容由模型补充，非视频原话" in md
+    assert "由模型补充" in md
     assert "模型补充" in md
+
+
+def test_supplements_carry_an_explicit_verification_warning(note, meta, transcript):
+    """⛔ 回归守卫。
+
+    实测发现模型会在补充背景里编造事实（把 MGSD 全称写成
+    Master Grade Sword）。这一节是用户最想要、也最不可信的，
+    必须在笔记正文里就把「需自行核实」写清楚，不能只靠文档说明。
+    """
+    md = render_note_markdown(note, meta, transcript)
+    assert "未经验证" in md
+    assert "核实" in md
 
 
 def test_auto_transcript_gets_warning(note, meta, transcript):

@@ -12,7 +12,19 @@ import json
 import pytest
 
 from app.errors import LLMError, LLMOutputInvalid
-from app.notes.pipeline import NoteGenerator, to_note, to_partial_notes
+from app.notes.pipeline import (
+    NoteGenerator,
+    _note_needs_retry,
+    _outline_timestamps_bad,
+    to_note,
+    to_partial_notes,
+)
+from app.notes.prompts import (
+    REDUCE_INSTRUCTIONS,
+    SINGLE_INSTRUCTIONS,
+    build_reduce_prompt,
+    build_single_prompt,
+)
 from app.schemas import Transcript, TranscriptSegment, VideoMeta
 
 from .conftest import FakeProvider
@@ -178,6 +190,43 @@ def test_to_note_supplements_do_not_repeat_concepts():
     assert [s.topic for s in note.supplements] == ["浮游炮"]
 
 
+def test_to_note_supplement_overlap_detected_by_containment():
+    """模型会给同一个词加后缀来躲避去重，必须用包含判断。
+
+    实测产出：concepts 写「MGSD系列」，supplements 写「MGSD系列定义」，
+    精确相等匹配完全拦不住。
+    """
+    raw = {
+        "title": "t",
+        "concepts": [
+            {"term": "MGSD系列", "explanation": "e"},
+            {"term": "UC纪元", "explanation": "e"},
+            {"term": "独眼机型", "explanation": "e"},
+        ],
+        "supplements": [
+            {"topic": "MGSD系列定义", "why": "w", "content": "c"},
+            {"topic": "UC纪元定义", "why": "w", "content": "c"},
+            {"topic": "独眼机型定义", "why": "w", "content": "c"},
+            {"topic": "浮游炮的工作原理", "why": "w", "content": "c"},
+        ],
+    }
+    note = to_note(raw)
+    assert [s.topic for s in note.supplements] == ["浮游炮的工作原理"]
+
+
+def test_to_note_keeps_distinct_supplements():
+    """包含判断不能误伤真正不同的补充内容。"""
+    raw = {
+        "title": "t",
+        "concepts": [{"term": "ANN", "explanation": "e"}],
+        "supplements": [
+            {"topic": "维度灾难", "why": "w", "content": "c"},
+            {"topic": "索引结构", "why": "w", "content": "c"},
+        ],
+    }
+    assert len(to_note(raw).supplements) == 2
+
+
 def test_to_note_caps_uncertainties():
     raw = {
         "title": "t",
@@ -228,6 +277,212 @@ def test_to_note_accepts_null_timestamps():
         "key_points": [{"title": "t", "detail": "d", "timestamp": None}],
     }
     assert to_note(raw).key_points[0].timestamp is None
+
+
+# ---------------------------------------------------------------------------
+# 提示词里必须写清的约束
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_separates_concepts_from_supplements(instructions):
+    """⛔ 回归守卫。
+
+    实测教训：模型把同一个词在 concepts 和 supplements 里各写一遍
+    （「MGSD系列」与「MGSD系列定义」），去重删干净后补充背景变成 0 条 ——
+    而这恰恰是产品最核心的价值。所以提示词必须把两节的职责划清。
+    """
+    assert "concepts" in instructions
+    assert "supplements" in instructions
+    # 必须明确禁止两节重复
+    assert "不要" in instructions and "换个说法" in instructions
+    # 必须说明 supplements 是「视频之外」的知识
+    assert "外部背景" in instructions or "没有义务讲" in instructions
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_requires_copying_timestamps(instructions):
+    """时间戳必须是「照抄标记」，不是让模型算。"""
+    assert "原样抄写" in instructions
+    assert "不要换算成秒数" in instructions
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_warns_against_fabrication(instructions):
+    """补充背景最容易产生幻觉，必须有明确约束。"""
+    assert "有把握" in instructions
+    assert "编造" in instructions
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_demands_distinct_increasing_timestamps(instructions):
+    """⛔ 回归守卫。
+
+    实测症状：模型偷懒时把大纲所有章节都标成 00:00，导致时间戳完全失效
+    （而时间戳是「跳回原视频核对」的唯一入口）。提示词必须明确要求
+    时间戳各不相同且递增。
+    """
+    assert "各不相同" in instructions
+    assert "递增" in instructions
+
+
+# ---------------------------------------------------------------------------
+# 大纲时间戳退化检测
+# ---------------------------------------------------------------------------
+
+
+def test_outline_degenerate_detects_all_zero():
+    note = to_note(
+        {
+            "title": "t",
+            "one_liner": "o",
+            "summary": "s",
+            "outline": [
+                {"timestamp": "00:00", "heading": "a", "summary": "x"},
+                {"timestamp": "00:00", "heading": "b", "summary": "x"},
+                {"timestamp": "00:00", "heading": "c", "summary": "x"},
+            ],
+        }
+    )
+    assert _outline_timestamps_bad(note) is True
+    assert "时间戳" in _note_needs_retry(note)
+
+
+def test_outline_not_degenerate_when_distinct():
+    note = to_note(
+        {
+            "title": "t",
+            "one_liner": "o",
+            "summary": "s",
+            "key_points": [{"title": "k", "detail": "d"}],
+            "outline": [
+                {"timestamp": "00:00", "heading": "a", "summary": "x"},
+                {"timestamp": "02:23", "heading": "b", "summary": "x"},
+                {"timestamp": "05:46", "heading": "c", "summary": "x"},
+            ],
+        }
+    )
+    assert _outline_timestamps_bad(note) is False
+    assert _note_needs_retry(note) == ""
+
+
+def test_outline_degenerate_ignores_short_outlines():
+    """只有一两条大纲时不判定退化（样本太小）。"""
+    note = to_note(
+        {
+            "title": "t",
+            "one_liner": "o",
+            "summary": "s",
+            "outline": [{"timestamp": "00:00", "heading": "a", "summary": "x"}],
+        }
+    )
+    assert _outline_timestamps_bad(note) is False
+
+
+def test_outline_flags_non_increasing_timestamps():
+    """⛔ 回归守卫。
+
+    实测症状：模型给出 [00:00] [04:46] [05:46] [16:13] [11:48] ——
+    最后一条比倒数第二条还早，顺序乱了，大纲的导航作用就废了。
+    """
+    note = to_note(
+        {
+            "title": "t",
+            "one_liner": "o",
+            "summary": "s",
+            "outline": [
+                {"timestamp": "00:00", "heading": "a", "summary": "x"},
+                {"timestamp": "04:46", "heading": "b", "summary": "x"},
+                {"timestamp": "16:13", "heading": "c", "summary": "x"},
+                {"timestamp": "11:48", "heading": "d", "summary": "x"},
+            ],
+        }
+    )
+    assert _outline_timestamps_bad(note) is True
+    assert "递增" in _note_needs_retry(note)
+
+
+def test_outline_accepts_monotonic_timestamps():
+    note = to_note(
+        {
+            "title": "t",
+            "one_liner": "o",
+            "summary": "s",
+            "key_points": [{"title": "k", "detail": "d"}],
+            "outline": [
+                {"timestamp": "00:00", "heading": "a", "summary": "x"},
+                {"timestamp": "04:46", "heading": "b", "summary": "x"},
+                {"timestamp": "16:13", "heading": "c", "summary": "x"},
+            ],
+        }
+    )
+    assert _outline_timestamps_bad(note) is False
+
+
+def test_needs_retry_flags_thin_note():
+    note = to_note({"title": "只有标题", "one_liner": "", "summary": ""})
+    assert "过少" in _note_needs_retry(note)
+
+
+async def test_generator_retries_when_outline_timestamps_bad(
+    settings, sample_transcript, sample_note_payload, meta
+):
+    """大纲时间戳退化时必须自动重试，而不是把坏结果交给用户。"""
+    degenerate = {
+        "title": "t",
+        "one_liner": "一句话",
+        "summary": "摘要",
+        "key_points": [{"title": "k", "detail": "d"}],
+        "outline": [
+            {"timestamp": "00:00", "heading": "a", "summary": "x"},
+            {"timestamp": "00:00", "heading": "b", "summary": "x"},
+            {"timestamp": "00:00", "heading": "c", "summary": "x"},
+        ],
+    }
+    provider = FakeProvider([degenerate, sample_note_payload])
+    note = await NoteGenerator(provider, settings).generate(sample_transcript, meta)
+
+    assert len(provider.calls) == 2
+    assert "时间戳" in provider.calls[1]
+    assert not _outline_timestamps_bad(note)
+
+
+async def test_generator_keeps_first_result_if_retry_also_bad(
+    settings, sample_transcript, meta
+):
+    """重试也不合格时保留首次结果，不要用更差的结果覆盖。"""
+    degenerate = {
+        "title": "首次",
+        "one_liner": "一句话",
+        "summary": "摘要",
+        "key_points": [{"title": "k", "detail": "d"}],
+        "outline": [
+            {"timestamp": "00:00", "heading": "a", "summary": "x"},
+            {"timestamp": "00:00", "heading": "b", "summary": "x"},
+            {"timestamp": "00:00", "heading": "c", "summary": "x"},
+        ],
+    }
+    provider = FakeProvider([degenerate, degenerate])
+    note = await NoteGenerator(provider, settings).generate(sample_transcript, meta)
+    assert note.title == "首次"
+
+
+async def test_generator_uses_temperature_zero(
+    settings, sample_transcript, sample_note_payload, meta
+):
+    """事实整理任务必须用 temperature=0，减少时对时错的不确定性。"""
+    captured: list[float] = []
+
+    class RecordingProvider(FakeProvider):
+        async def complete_json(self, *, system, user, schema=None, temperature=0.2):
+            captured.append(temperature)
+            return await super().complete_json(
+                system=system, user=user, schema=schema, temperature=temperature
+            )
+
+    provider = RecordingProvider([sample_note_payload])
+    await NoteGenerator(provider, settings).generate(sample_transcript, meta)
+    assert captured and all(t == 0.0 for t in captured)
 
 
 # ---------------------------------------------------------------------------
