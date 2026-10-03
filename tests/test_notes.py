@@ -98,16 +98,33 @@ def test_to_note_skips_empty_items():
     assert note.concepts == []
 
 
-def test_to_note_forces_supplement_source_to_model():
-    """补充内容必须标成模型产出，防止模型自称是视频原话。"""
+def test_to_note_parses_follow_ups():
+    """待查清单只收问题与原因，不再有「答案」字段。"""
     raw = {
         "title": "t",
-        "supplements": [
-            {"topic": "背景", "why": "原因", "content": "内容", "source": "video"}
+        "follow_ups": [
+            {
+                "question": "刹帝利出自哪部作品？",
+                "why": "视频默认你熟悉 UC 系谱",
+                "where": "机动战士高达UC",
+            }
         ],
     }
     note = to_note(raw)
-    assert note.supplements[0].source == "model"
+    assert len(note.follow_ups) == 1
+    assert note.follow_ups[0].question == "刹帝利出自哪部作品？"
+    assert note.follow_ups[0].where == "机动战士高达UC"
+
+
+def test_to_note_follow_up_without_where():
+    """拿不准搜索词时应当留空，而不是硬编一个。"""
+    raw = {"title": "t", "follow_ups": [{"question": "q", "why": "w"}]}
+    assert to_note(raw).follow_ups[0].where is None
+
+
+def test_to_note_follow_up_falls_back_to_why_as_question():
+    raw = {"title": "t", "follow_ups": [{"why": "视频没解释这个"}]}
+    assert to_note(raw).follow_ups[0].question == "视频没解释这个"
 
 
 def test_to_note_coerces_time_strings():
@@ -165,66 +182,37 @@ def test_to_note_dedups_concepts():
     assert len(note.concepts) == 2  # "MGSD" 与 "mgsd " 视为同一个
 
 
-def test_to_note_dedups_supplements():
+
+def test_to_note_dedups_follow_ups():
     raw = {
         "title": "t",
-        "supplements": [
-            {"topic": "千套分件", "content": "A"},
-            {"topic": "千套分件", "content": "B"},
+        "follow_ups": [
+            {"question": "刹帝利是什么？", "why": "a"},
+            {"question": "刹帝利是什么?", "why": "b"},
         ],
     }
-    assert len(to_note(raw).supplements) == 1
+    # 归一化后（去标点）视为同一个问题
+    assert len(to_note(raw).follow_ups) == 1
 
 
-def test_to_note_supplements_do_not_repeat_concepts():
-    """实测常见毛病：同一个词在「关键概念」和「补充背景」里各写一遍。"""
+def test_to_note_keeps_distinct_follow_ups():
     raw = {
         "title": "t",
-        "concepts": [{"term": "精神力感应框架", "explanation": "驾驶舱装置"}],
-        "supplements": [
-            {"topic": "精神力感应框架", "why": "重复了", "content": "同上"},
-            {"topic": "浮游炮", "why": "确实需要", "content": "隐藏武器"},
+        "follow_ups": [
+            {"question": "问题一？", "why": "a"},
+            {"question": "问题二？", "why": "b"},
         ],
     }
-    note = to_note(raw)
-    assert [s.topic for s in note.supplements] == ["浮游炮"]
+    assert len(to_note(raw).follow_ups) == 2
 
 
-def test_to_note_supplement_overlap_detected_by_containment():
-    """模型会给同一个词加后缀来躲避去重，必须用包含判断。
-
-    实测产出：concepts 写「MGSD系列」，supplements 写「MGSD系列定义」，
-    精确相等匹配完全拦不住。
-    """
+def test_to_note_caps_follow_ups():
     raw = {
         "title": "t",
-        "concepts": [
-            {"term": "MGSD系列", "explanation": "e"},
-            {"term": "UC纪元", "explanation": "e"},
-            {"term": "独眼机型", "explanation": "e"},
-        ],
-        "supplements": [
-            {"topic": "MGSD系列定义", "why": "w", "content": "c"},
-            {"topic": "UC纪元定义", "why": "w", "content": "c"},
-            {"topic": "独眼机型定义", "why": "w", "content": "c"},
-            {"topic": "浮游炮的工作原理", "why": "w", "content": "c"},
-        ],
+        "follow_ups": [{"question": f"问题{i}？", "why": "w"} for i in range(20)],
     }
-    note = to_note(raw)
-    assert [s.topic for s in note.supplements] == ["浮游炮的工作原理"]
+    assert len(to_note(raw).follow_ups) <= 5
 
-
-def test_to_note_keeps_distinct_supplements():
-    """包含判断不能误伤真正不同的补充内容。"""
-    raw = {
-        "title": "t",
-        "concepts": [{"term": "ANN", "explanation": "e"}],
-        "supplements": [
-            {"topic": "维度灾难", "why": "w", "content": "c"},
-            {"topic": "索引结构", "why": "w", "content": "c"},
-        ],
-    }
-    assert len(to_note(raw).supplements) == 2
 
 
 def test_to_note_caps_uncertainties():
@@ -241,14 +229,6 @@ def test_to_note_caps_key_points():
         "key_points": [{"title": f"要点{i}", "detail": "d"} for i in range(30)],
     }
     assert len(to_note(raw).key_points) <= 12
-
-
-def test_to_note_caps_supplements():
-    raw = {
-        "title": "t",
-        "supplements": [{"topic": f"主题{i}", "content": "c"} for i in range(20)],
-    }
-    assert len(to_note(raw).supplements) <= 5
 
 
 def test_to_note_caps_concepts():
@@ -285,19 +265,29 @@ def test_to_note_accepts_null_timestamps():
 
 
 @pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
-def test_prompt_separates_concepts_from_supplements(instructions):
+def test_prompt_separates_concepts_from_follow_ups(instructions):
     """⛔ 回归守卫。
 
-    实测教训：模型把同一个词在 concepts 和 supplements 里各写一遍
-    （「MGSD系列」与「MGSD系列定义」），去重删干净后补充背景变成 0 条 ——
-    而这恰恰是产品最核心的价值。所以提示词必须把两节的职责划清。
+    实测教训：模型在「解释术语」时会编造外部事实
+    （同一个术语的全称三次运行给出三种答案）。
+    所以提示词必须把两节职责划清：
+    concepts 只依据转写解释，follow_ups 只提问不给答案。
     """
     assert "concepts" in instructions
-    assert "supplements" in instructions
-    # 必须明确禁止两节重复
-    assert "不要" in instructions and "换个说法" in instructions
-    # 必须说明 supplements 是「视频之外」的知识
-    assert "外部背景" in instructions or "没有义务讲" in instructions
+    assert "follow_ups" in instructions
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_forbids_answering_follow_ups(instructions):
+    """待查清单必须只提问 —— 这是防幻觉的核心设计。"""
+    assert "只提问" in instructions
+    assert "不要给答案" in instructions
+
+
+@pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
+def test_prompt_forbids_external_facts_in_concepts(instructions):
+    """概念解释也只能用转写里有的内容。"""
+    assert "不要补外部事实" in instructions
 
 
 @pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
@@ -309,9 +299,9 @@ def test_prompt_requires_copying_timestamps(instructions):
 
 @pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])
 def test_prompt_warns_against_fabrication(instructions):
-    """补充背景最容易产生幻觉，必须有明确约束。"""
-    assert "有把握" in instructions
-    assert "编造" in instructions
+    """模型编造事实是实测最危险的失败模式，必须有明确约束。"""
+    assert "编" in instructions
+    assert "害了读者" in instructions or "没有可靠的外部知识" in instructions
 
 
 @pytest.mark.parametrize("instructions", [REDUCE_INSTRUCTIONS, SINGLE_INSTRUCTIONS])

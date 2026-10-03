@@ -179,7 +179,7 @@ def test_flatten_schema_is_object_rooted():
     schema = flatten_schema(Note)
     assert schema["type"] == "object"
     assert "properties" in schema
-    for field in ("title", "one_liner", "summary", "key_points", "supplements"):
+    for field in ("title", "one_liner", "summary", "key_points", "follow_ups"):
         assert field in schema["properties"]
 
 

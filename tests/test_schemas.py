@@ -221,7 +221,7 @@ def test_note_defaults_are_empty_lists():
     assert note.outline == []
     assert note.key_points == []
     assert note.concepts == []
-    assert note.supplements == []
+    assert note.follow_ups == []
     assert note.uncertainties == []
     assert note.tags == []
 

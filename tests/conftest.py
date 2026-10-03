@@ -138,11 +138,11 @@ def sample_note_payload() -> dict[str, Any]:
                 "timestamp": 15.2,
             }
         ],
-        "supplements": [
+        "follow_ups": [
             {
-                "topic": "为什么高维会变慢",
-                "why": "不理解维度灾难就看不懂为什么要用近似算法。",
-                "content": "维度越高，数据越稀疏，基于树的分割方法退化成线性扫描。",
+                "question": "ANN 的召回率怎么调？",
+                "why": "视频提到「牺牲一点准确率」但没给出调节手段。",
+                "where": "ANN 召回率 参数",
             }
         ],
         "uncertainties": [

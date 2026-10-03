@@ -196,13 +196,35 @@ class Concept(BaseModel):
         return format_clock(self.timestamp) if self.timestamp is not None else ""
 
 
-class Supplement(BaseModel):
-    """补充背景知识 —— 视频没讲但理解它需要知道的内容。"""
+class FollowUp(BaseModel):
+    """读完笔记后，你自己还需要搞清楚的问题。
 
-    topic: str = Field(description="补充的主题")
-    why: str = Field(description="为什么理解原视频需要知道这个")
-    content: str = Field(description="补充内容本身，讲清楚，不要只给名词")
-    source: Source = Field(default="model")
+    **为什么这一节不是「模型给出的解释」**：
+
+    实测 8B 本地模型会在这个位置自信地编造事实 —— 同一个视频、
+    同一句提示词，三次运行对「MGSD 的全称」给出三种不同答案
+    （Master Grade Sword / Master Grade SD / Master Grade Scale Diecast），
+    还编出过不存在的「NT纪元」。
+
+    而「视频里哪里没交代清楚」是**能从转写本身推出来的可靠结论**。
+    所以这一节只产出**待查问题**，不做任何断言 ——
+    这样它不可能出错，而且比编造出来的答案更有用：
+    直接告诉你该去查什么。
+    """
+
+    question: str = Field(
+        description="需要你自己搞清楚的问题，写成问句。只问视频没交代清楚的点。"
+    )
+    why: str = Field(
+        description="为什么理解原视频需要它 —— 说明视频里在哪里用到了它却没解释"
+    )
+    where: str | None = Field(
+        default=None,
+        description=(
+            "建议的查询方向或关键词，例如「机动战士高达UC 刹帝利」。"
+            "不确定就填 null，**不要编造具体的作品名或出处**。"
+        ),
+    )
 
 
 class Uncertainty(BaseModel):
@@ -221,7 +243,13 @@ class Note(BaseModel):
     outline: list[OutlineItem] = Field(default_factory=list)
     key_points: list[KeyPoint] = Field(default_factory=list)
     concepts: list[Concept] = Field(default_factory=list)
-    supplements: list[Supplement] = Field(default_factory=list)
+    follow_ups: list[FollowUp] = Field(
+        default_factory=list,
+        description=(
+            "视频默认你懂、但其实没解释清楚的点，列成待查问题。"
+            "**只提问，不要给答案** —— 你没有可靠的外部知识，编答案会害了读者。"
+        ),
+    )
     uncertainties: list[Uncertainty] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 

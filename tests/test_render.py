@@ -16,11 +16,11 @@ from app.notes.render import (
 )
 from app.schemas import (
     Concept,
+    FollowUp,
     KeyPoint,
     Note,
     NoteRecord,
     OutlineItem,
-    Supplement,
     Transcript,
     TranscriptSegment,
     TranscriptSource,
@@ -73,12 +73,16 @@ def note() -> Note:
                 timestamp=912.0,
             )
         ],
-        supplements=[
-            Supplement(
-                topic="维度灾难",
-                why="不理解它就看不懂为什么要用近似算法。",
-                content="维度越高数据越稀疏，树形分割退化成线性扫描。",
-            )
+        follow_ups=[
+            FollowUp(
+                question="刹帝利出自哪部作品、什么定位？",
+                why="视频默认你熟悉 UC 系谱，却完全没交代背景。",
+                where="机动战士高达UC 刹帝利",
+            ),
+            FollowUp(
+                question="MGSD 与 HG / RG / MG 的定位差别？",
+                why="视频反复拿它们对比，却没给出各自定义。",
+            ),
         ],
         uncertainties=[
             Uncertainty(item="HNSW 参数", reason="视频里一带而过")
@@ -144,7 +148,7 @@ def test_renders_all_major_sections(note, meta, transcript):
         "大纲",
         "核心要点",
         "关键概念",
-        "补充背景",
+        "你可能还需要搞清楚这些",
         "存疑与待验证",
         "转写全文",
     ):
@@ -206,19 +210,41 @@ def test_video_sourced_items_marked_as_video(note, meta, transcript):
     assert "视频原话" in md
 
 
-def test_supplements_marked_as_model_generated(note, meta, transcript):
+def test_follow_ups_render_as_questions(note, meta, transcript):
     md = render_note_markdown(note, meta, transcript)
-    assert "由模型补充" in md
-    assert "模型补充" in md
+    assert "刹帝利出自哪部作品" in md
+    assert "MGSD 与 HG / RG / MG 的定位差别" in md
 
 
-def test_supplements_carry_an_explicit_verification_warning(note, meta, transcript):
+def test_follow_ups_include_search_hint_when_present(note, meta, transcript):
+    md = render_note_markdown(note, meta, transcript)
+    assert "建议搜" in md
+    assert "机动战士高达UC 刹帝利" in md
+
+
+def test_follow_ups_omit_search_hint_when_absent(note, meta, transcript):
+    """没有把握的条目不该硬编一个搜索词。"""
+    md = render_note_markdown(note, meta, transcript)
+    # 第二条 follow_up 没有 where，其区块内不应出现"建议搜"
+    lines = md.splitlines()
+    idx = next(i for i, ln in enumerate(lines) if "MGSD 与 HG" in ln)
+    block = "\n".join(lines[idx : idx + 4])
+    assert "建议搜" not in block
+
+
+def test_follow_ups_section_states_it_gives_no_answers(note, meta, transcript):
     """⛔ 回归守卫。
 
-    实测发现模型会在补充背景里编造事实（把 MGSD 全称写成
-    Master Grade Sword）。这一节是用户最想要、也最不可信的，
-    必须在笔记正文里就把「需自行核实」写清楚，不能只靠文档说明。
+    改成「待查清单」的核心理由：本地模型会编造事实
+    （同一个术语的全称三次运行给出三种答案）。
+    所以这一节必须在正文里说明它只给问题、不给答案。
     """
+    md = render_note_markdown(note, meta, transcript)
+    assert "只给问题，不给答案" in md
+
+
+def test_model_generated_concepts_carry_verification_warning(note, meta, transcript):
+    """概念解释由模型生成，可能出错，正文必须提醒核实。"""
     md = render_note_markdown(note, meta, transcript)
     assert "未经验证" in md
     assert "核实" in md

@@ -67,7 +67,7 @@ async def run(args: argparse.Namespace) -> int:
     print(f"  大纲 {len(result.note.outline)} 条 ｜ "
           f"要点 {len(result.note.key_points)} 条 ｜ "
           f"概念 {len(result.note.concepts)} 条 ｜ "
-          f"补充 {len(result.note.supplements)} 条 ｜ "
+          f"待查 {len(result.note.follow_ups)} 条 ｜ "
           f"存疑 {len(result.note.uncertainties)} 条")
     print()
     print(f"  笔记已保存：{result.markdown_path}")
