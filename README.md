@@ -32,24 +32,49 @@ SQLite + 文件存储、一键清除数据、环境自检、命令行入口。
 
 ## 快速开始
 
+### 日常使用：双击就行
+
+**首次安装**（只需做一次）：
+
 ```powershell
-# 1. 建虚拟环境并装依赖
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
-# 2. 有 NVIDIA 显卡再装 CUDA 运行库（约 1.3GB，纯 CPU 可跳过）
+# 有 NVIDIA 显卡再装 CUDA 运行库（约 1.3GB，纯 CPU 可跳过）
 .\.venv\Scripts\python.exe -m pip install -r requirements-cuda.txt
 
-# 3. 配置（可选，全都有默认值）
+# 可选：识别画面上的提示词/代码/命令
+.\.venv\Scripts\python.exe -m pip install -r requirements-vision.txt
+
+# 配置（可选，全都有默认值）
 Copy-Item .env.example .env
 
-# 4. 自检：确认这台机器能不能用
+# 自检：确认这台机器能不能用
 .\.venv\Scripts\python.exe -m scripts.doctor
+```
 
-# 5. 启动本地界面，浏览器打开 http://127.0.0.1:8765
+**之后每次要用**，双击项目根目录的 **`启动笔记.bat`** 即可（桌面上也放了一个
+「MyNoteApp 笔记」快捷方式）。它会自动：
+
+1. 检查虚拟环境在不在 —— 不在就打印出该敲哪几条命令；
+2. 检查 Ollama —— 没在跑就帮忙拉起来（首次加载模型可能要等一会儿）；
+3. 启动服务，**等服务真的能响应了再打开浏览器**（不是干等固定秒数）；
+4. 已经在运行时直接开浏览器，**不会重复启动第二个服务**。
+
+**关掉那个黑窗口就是停止服务。** 数据都在 `data/` 目录里，不会丢。
+
+> 说明：Windows 上 `python.exe` 会再拉起一个子进程干活，
+> 真正监听端口的是子进程。所以启动器清理时用的是 `taskkill /T`
+> 结束**整棵进程树** —— 只杀父进程会留下孤儿进程占着端口，
+> 下次启动就会莫名其妙失败。
+
+### 命令行方式（不用界面）
+
+```powershell
+# 启动本地界面
 .\.venv\Scripts\python.exe -m app
 
-# 也可以完全不用界面，直接命令行产出笔记
+# 完全不用界面，直接产出笔记
 .\.venv\Scripts\python.exe -m scripts.mynote BV1GJ411x7h7
 ```
 
