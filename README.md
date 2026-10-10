@@ -284,6 +284,10 @@ app/
 
 踩过的坑与实证结论都记录在案，避免重蹈覆辙：
 
+- **[docs/LESSONS.md](docs/LESSONS.md)** —— 从零搭这套东西过程中，
+  **Web 开发 / AI 部署 / 工程方法**三个层面真正踩过才知道的经验。
+  每条都写清「现象 → 原因 → 怎么办」，并标注哪些是实测数据、
+  哪些是跨项目成立的原理、哪些还没完全坐实。适合当学习材料读。
 - [docs/research/blackwell-whisper.md](docs/research/blackwell-whisper.md)
   —— RTX 50 系（sm_120）跑 faster-whisper 的版本要求、
   `compute_type` 的生死线、Windows CUDA DLL 加载
