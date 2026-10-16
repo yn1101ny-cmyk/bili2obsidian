@@ -14,6 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.13"]
+    env:
+      # Windows 运行时的 ANSI 代码页不是 UTF-8；本项目的文案全是中文，
+      # 强制 UTF-8 模式，省掉一整类「本地能过、CI 报 Unicode 错」的坑。
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
 
     steps:
       - uses: actions/checkout@v4
@@ -28,5 +33,36 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-vision.txt
 
+      - name: 环境信息
+        run: |
+          python -V
+          python -c "import sys, locale; print('preferred encoding:', locale.getpreferredencoding(False)); print('stdout encoding:', sys.stdout.encoding); print('executable:', sys.executable)"
+          python -m pip list --format=freeze | Select-String -Pattern "pytest|respx|httpx|faster-whisper|ctranslate2|onnxruntime|rapidocr"
+
       - name: 跑测试（全部离线，不需要 Ollama / 显卡 / B站登录态）
-        run: python -m pytest -q
+        shell: pwsh
+        run: |
+          python -m pytest -q 2>&1 | Tee-Object -FilePath pytest.out
+          $code = $LASTEXITCODE
+
+          # 失败原因写进 step summary：不登录也能通过 Checks API 读到，
+          # 免得每次都要人肉贴日志。
+          if ($code -ne 0) {
+            $all = Get-Content pytest.out -Encoding utf8
+            $failed = $all | Where-Object { $_ -match '^(FAILED|ERROR) ' }
+            $tail = $all | Select-Object -Last 120
+            $body = @()
+            $body += '## pytest 失败'
+            $body += ''
+            if ($failed) { $body += '```'; $body += $failed; $body += '```' }
+            $body += '```'
+            $body += $tail
+            $body += '```'
+            $text = ($body -join "`n")
+            if ($text.Length -gt 40000) { $text = $text.Substring($text.Length - 40000) }
+            $text | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+            $failed | Select-Object -First 20 | ForEach-Object { "::error::$_" }
+          } else {
+            Get-Content pytest.out -Tail 5 | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          }
+          exit $code
