@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,81 @@ _CODE_HINTS: dict[int, str] = {
 
 #: 遇到这些错误码应当退避重试（而不是直接失败）
 _RETRYABLE_CODES = frozenset({-352, -412, -509, -799})
+
+#: 视频页：官方 ``view`` 接口被风控时的兜底数据源。
+#: 页面 HTML 里内联了播放状态（``window.__INITIAL_STATE__``），aid、bvid、
+#: 每个分P 的 cid 与标题都在里面 —— 够字幕/章节接口用。
+#: 实测：同一台机器上 ``x/web-interface/view`` 吃 -412 时，视频页照常返回。
+_PAGE_VIEW = "https://www.bilibili.com/video/{bvid}"
+
+_BVID_RE = re.compile(r'"bvid":"(BV[0-9A-Za-z]+)"')
+_AID_RE = re.compile(r'"aid":(\d+)')
+_CID_RE = re.compile(r'"cid":(\d+)')
+_INITIAL_STATE_RE = re.compile(r"window\.__INITIAL_STATE__\s*=\s*")
+#: 内联 JSON 里会出现裸 ``undefined``，不是合法 JSON，先换成 null 再解析
+_UNDEFINED_RE = re.compile(r'(?<![0-9A-Za-z_"])undefined(?![0-9A-Za-z_"])')
+
+
+def _balanced_json(text: str, start: int) -> str | None:
+    """从 ``text[start]``（必须是 ``{``）起按括号配对截出一个完整的 JSON 串。"""
+    if start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
+def mine_view_payload(html: str) -> dict[str, Any] | None:
+    """从视频页 HTML 里挖出 ``videoData`` —— 形状与 ``view`` 接口的 ``data`` 一致。
+
+    先按 ``window.__INITIAL_STATE__`` 解析内联 JSON；页面改版或内联状态被裁掉时，
+    退回到直接捞 ``aid`` / ``cid``（只够字幕与章节用，标题等信息留空）。
+    """
+    found = _INITIAL_STATE_RE.search(html)
+    if found:
+        raw = _balanced_json(html, found.end())
+        if raw:
+            try:
+                state = json.loads(_UNDEFINED_RE.sub("null", raw))
+            except ValueError:
+                state = None
+            if isinstance(state, dict):
+                for key in ("videoData", "videoInfo"):
+                    payload = state.get(key)
+                    if isinstance(payload, dict) and payload.get("aid"):
+                        return payload
+
+    anchor = html.find('"videoData"')
+    base = anchor if anchor >= 0 else 0
+    aid_match = _AID_RE.search(html, base) or _AID_RE.search(html)
+    cid_match = _CID_RE.search(html, base) or _CID_RE.search(html)
+    if not aid_match or not cid_match:
+        return None
+    bvid_match = _BVID_RE.search(html, base) or _BVID_RE.search(html)
+    return {
+        "aid": int(aid_match.group(1)),
+        "bvid": bvid_match.group(1) if bvid_match else "",
+        "pages": [{"cid": int(cid_match.group(1)), "page": 1, "part": ""}],
+    }
 
 
 class BiliClient:
@@ -300,8 +376,62 @@ class BiliClient:
     # ------------------------------------------------------------------
     # 元数据
     # ------------------------------------------------------------------
-    async def get_video_meta(self, ref: VideoRef) -> VideoMeta:
-        """拉取视频元数据，并按 ``ref.page`` 定位到具体分P。"""
+    async def _get_html(self, url: str) -> str:
+        """GET 一个 HTML 页面（不按 JSON 解析），带限速与 412 退避重试。"""
+        client = self._get_client()
+        last_error: Exception | None = None
+
+        for attempt in range(self.settings.bili_max_retries + 1):
+            await self._throttle()
+            try:
+                resp = await client.get(url)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                if attempt >= self.settings.bili_max_retries:
+                    raise BiliApiError(url, None, f"网络请求失败：{exc}") from exc
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+
+            if resp.status_code == 412:
+                last_error = BiliApiError(url, -412, _CODE_HINTS[-412])
+                if attempt >= self.settings.bili_max_retries:
+                    raise last_error
+                # 风控：刷新设备指纹并退避
+                self._buvid = None
+                await self._ensure_buvid(force=True)
+                await asyncio.sleep(3.0 * (attempt + 1))
+                continue
+
+            if resp.status_code >= 400:
+                last_error = BiliApiError(url, resp.status_code, "页面请求失败")
+                if attempt >= self.settings.bili_max_retries:
+                    raise last_error
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+
+            return resp.text
+
+        raise BiliApiError(url, None, f"重试耗尽：{last_error}")
+
+    async def _view_payload_from_page(self, ref: VideoRef) -> dict[str, Any]:
+        """从视频页 HTML 里取 ``videoData``（``view`` 接口的兜底路线）。"""
+        if not ref.bvid:
+            raise InvalidVideoUrl(ref.raw, "只有 aid 时无法用视频页兜底")
+        url = _PAGE_VIEW.format(bvid=ref.bvid)
+        html = await self._get_html(url)
+        payload = mine_view_payload(html)
+        if payload is None:
+            raise BiliApiError(url, None, "视频页里没找到视频数据（页面改版或被风控）")
+        return payload
+
+    async def _view_payload(self, ref: VideoRef) -> dict[str, Any]:
+        """取元数据 payload：先走官方接口，被风控时回落到解析视频页。
+
+        为什么需要兜底：``x/web-interface/view`` 在没有 WBI 签名时很容易吃
+        **-412**（实测同一台机器上它被拦、``player/v2`` 正常），一被拦整条链路
+        就断了。而视频页是给人看的，风控宽松得多，页面里内联的播放状态
+        恰好带着 aid/cid/分P 信息。
+        """
         params: dict[str, Any] = {}
         if ref.bvid:
             params["bvid"] = ref.bvid
@@ -310,14 +440,31 @@ class BiliClient:
         else:
             raise InvalidVideoUrl(ref.raw, "缺少 bvid 与 aid")
 
-        data = await self._get_json(
-            _API_VIEW,
-            params=params,
-            cache_key=f"view:{ref.bvid or ref.aid}",
-        )
+        try:
+            data = await self._get_json(
+                _API_VIEW,
+                params=params,
+                cache_key=f"view:{ref.bvid or ref.aid}",
+            )
+        except BiliApiError as exc:
+            if not ref.bvid:
+                raise
+            logger.warning(
+                "view 接口不可用（code=%s：%s），改用视频页解析 aid/cid", exc.code, exc.message
+            )
+            return await self._view_payload_from_page(ref)
+
         v = data.get("data")
-        if not isinstance(v, dict):
-            raise BiliApiError(_API_VIEW, data.get("code"), "缺少 data 字段")
+        if not isinstance(v, dict) or not v.get("aid"):
+            if not ref.bvid:
+                raise BiliApiError(_API_VIEW, data.get("code"), "缺少 data 字段")
+            logger.warning("view 接口没有返回可用的 data，改用视频页解析 aid/cid")
+            return await self._view_payload_from_page(ref)
+        return v
+
+    async def get_video_meta(self, ref: VideoRef) -> VideoMeta:
+        """拉取视频元数据，并按 ``ref.page`` 定位到具体分P。"""
+        v = await self._view_payload(ref)
 
         pages_raw = v.get("pages") or []
         pages: list[VideoPage] = []

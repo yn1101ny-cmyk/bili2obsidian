@@ -13,8 +13,9 @@ import httpx
 import pytest
 import respx
 
-from app.bili.client import BiliClient
+from app.bili.client import BiliClient, mine_view_payload
 from app.bili.subtitles import SubtitleTrack
+from app.bili.urls import VideoRef
 from app.errors import BiliApiError, NoTranscriptAvailable
 from app.schemas import TranscriptSource
 
@@ -118,3 +119,133 @@ async def test_try_get_subtitle_returns_none_when_track_download_fails(settings)
 
     async with BiliClient(settings) as bili:
         assert await bili.try_get_subtitle(aid=1, cid=2) is None
+
+
+# ---------------------------------------------------------------------------
+# view 接口被 -412 风控时的兜底：改从视频页 HTML 里挖 videoData
+#
+# 背景（回归用例）：`x/web-interface/view` 是所有链路的第一个请求，它一吃 -412
+# 整个流程就断了；而视频页（给人看的）风控宽松得多，页面里内联的
+# `window.__INITIAL_STATE__` 恰好带着 aid / cid / 分P，够字幕与章节接口用。
+# ---------------------------------------------------------------------------
+
+VIEW_URL = "https://api.bilibili.com/x/web-interface/view"
+PAGE_URL = "https://www.bilibili.com/video/BV1xx411c7mD"
+
+#: 视频页里内联的播放状态，形状与 view 接口的 data 一致（只留够用的字段）
+PAGE_HTML = (
+    "<!DOCTYPE html><html><head><title>t</title></head><body><script>"
+    "window.__INITIAL_STATE__="
+    '{"videoData":{"bvid":"BV1xx411c7mD","aid":12345,"title":"测试视频",'
+    '"desc":"说明","duration":600,"pubdate":1700000000,'
+    '"pic":"//i0.hdslb.com/cover.jpg","owner":{"name":"某UP","mid":7},'
+    '"pages":[{"cid":111,"page":1,"part":"第一P","duration":300},'
+    '{"cid":222,"page":2,"part":"第二P","duration":300}]}}'
+    "</script></body></html>"
+)
+
+
+def _ref(*, bvid: str | None = "BV1xx411c7mD", aid: int | None = None, page: int = 1) -> VideoRef:
+    return VideoRef(
+        raw=bvid or f"av{aid}",
+        kind="bvid" if bvid else "aid",
+        bvid=bvid,
+        aid=aid,
+        page=page,
+    )
+
+
+def test_mine_view_payload_variants() -> None:
+    """挖掘函数要能吃下三种页面：正常、含裸 undefined、完全没有内联状态。"""
+    payload = mine_view_payload(PAGE_HTML)
+    assert payload is not None
+    assert payload["aid"] == 12345
+    assert [p["cid"] for p in payload["pages"]] == [111, 222]
+
+    undefined_html = (
+        '<script>window.__INITIAL_STATE__={"a":undefined,'
+        '"videoData":{"aid":7,"pages":[{"cid":8}]}}</script>'
+    )
+    payload = mine_view_payload(undefined_html)
+    assert payload is not None and payload["aid"] == 7
+
+    # 内联状态被裁掉时退回正则：够字幕用（标题等信息留空）
+    trimmed = '<script>var x={"videoData":{"aid":99,"cid":5,"bvid":"BV1yy4y1H7Zz"}}</script>'
+    payload = mine_view_payload(trimmed)
+    assert payload is not None and payload["aid"] == 99
+    assert payload["pages"][0]["cid"] == 5
+
+    assert mine_view_payload("<html>nope</html>") is None
+
+
+@respx.mock
+async def test_view_payload_uses_page_when_view_is_blocked(settings) -> None:
+    """view 接口吃 -412 时必须回落到视频页，而不是把整条链路断掉。"""
+    local = settings.model_copy(update={"bili_max_retries": 0})
+    respx.get(VIEW_URL).mock(return_value=httpx.Response(412))
+    page = respx.get(PAGE_URL).mock(return_value=httpx.Response(200, text=PAGE_HTML))
+
+    async with BiliClient(local) as bili:
+        meta = await bili.get_video_meta(_ref(page=2))
+
+    assert page.called
+    assert meta.bvid == "BV1xx411c7mD"
+    assert meta.aid == 12345
+    assert meta.title == "测试视频"
+    assert meta.owner_name == "某UP"
+    assert meta.cid == 222
+    assert meta.part_title == "第二P"
+    assert meta.page == 2
+    assert meta.total_pages == 2
+
+
+@respx.mock
+async def test_view_payload_prefers_api_when_available(settings) -> None:
+    """接口正常时不要去抓页面（多一次请求、也多一次被风控的机会）。"""
+    respx.get(VIEW_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "bvid": "BV1xx411c7mD",
+                    "aid": 12345,
+                    "title": "接口来的",
+                    "pages": [{"cid": 111, "page": 1, "part": "第一P", "duration": 300}],
+                },
+            },
+        )
+    )
+    page = respx.get(PAGE_URL).mock(return_value=httpx.Response(200, text=PAGE_HTML))
+
+    async with BiliClient(settings) as bili:
+        meta = await bili.get_video_meta(_ref())
+
+    assert not page.called
+    assert meta.title == "接口来的"
+    assert meta.cid == 111
+
+
+@respx.mock
+async def test_page_fallback_raises_when_page_has_no_data(settings) -> None:
+    """页面也拿不到数据时要明确失败，不能返回半个元数据。"""
+    local = settings.model_copy(update={"bili_max_retries": 0})
+    respx.get(VIEW_URL).mock(return_value=httpx.Response(412))
+    respx.get(PAGE_URL).mock(return_value=httpx.Response(200, text="<html>nothing</html>"))
+
+    async with BiliClient(local) as bili:
+        with pytest.raises(BiliApiError):
+            await bili.get_video_meta(_ref())
+
+
+@respx.mock
+async def test_aid_only_ref_does_not_try_page(settings) -> None:
+    """只有 aid 时没有视频页可抓，直接报错而不是去拼一个假 URL。"""
+    local = settings.model_copy(update={"bili_max_retries": 0})
+    route = respx.get(VIEW_URL).mock(return_value=httpx.Response(412))
+
+    async with BiliClient(local) as bili:
+        with pytest.raises(BiliApiError):
+            await bili.get_video_meta(_ref(bvid=None, aid=999))
+
+    assert route.call_count == 1
