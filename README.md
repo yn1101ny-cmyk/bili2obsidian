@@ -6,6 +6,9 @@
 整理成结构化笔记，并**指出你还需要自己搞清楚什么**，让碎片化的知识在
 更短的时间里被真正理解。
 
+> **第一次在这台电脑上装？** 逐步说明见 **[docs/INSTALL.md](docs/INSTALL.md)**：
+> Python 版本要求、Ollama、国内网络的两个必设项、B站字幕怎么配、常见报错怎么办。
+
 ---
 
 ## 当前状态
@@ -31,6 +34,18 @@ SQLite + 文件存储、一键清除数据、环境自检、命令行入口。
 ---
 
 ## 快速开始
+
+**需要什么**：Windows 10/11 + Python **3.11~3.13**；（可选，想快很多）NVIDIA 显卡；（生成笔记用）本机 [Ollama](https://ollama.com/download) 拉一个 `qwen3:8b`。
+ffmpeg 不用自己装，依赖里自带。
+
+### 第 0 步：把项目拿到本地
+
+```powershell
+git clone https://github.com/yn1101ny-cmyk/mynoteapp.git
+cd mynoteapp
+```
+
+没有 git 就在 GitHub 页面点 **Code → Download ZIP**，解压后进目录继续。
 
 ### 日常使用：双击就行
 
@@ -118,6 +133,8 @@ Ollama registry 在国内也常被阻断（`dial tcp ... i/o timeout`）。
 | `python -m scripts.smoke_transcribe <链接>` | 只验证「下载 + 转写」这一段 |
 | `python -m scripts.check_asr` | 单独检查 CUDA / CTranslate2 是否可用 |
 | `python -m scripts.fetch_gguf` | 从 HF 镜像下 GGUF 并导入 Ollama |
+| `scripts\v_extract.py <链接…>` | 只拿转写稿：优先 B站官方字幕，拿不到才本地转写；支持多视频 / `--pages 1-3` |
+| `scripts\v_shots.py <BV号>` | 从抽帧缓存里挑关键画面并出总览图（不重抽帧、不重跑 OCR） |
 
 常用参数：`--model qwen3:8b`（换模型）、`--force-transcribe`（忽略转写缓存）、
 `--show`（直接打印 Markdown）。
@@ -295,3 +312,11 @@ app/
   —— B站字幕必须登录（WBI 签名也绕不过）、音频不需要登录、
   Referer 校验、限流码
 - [docs/NETWORK.md](docs/NETWORK.md) —— 出网清单与隐私边界
+
+---
+
+## 许可证
+
+[MIT](LICENSE)。你可以自由使用、修改、再发布，包括商用；保留版权声明即可。
+
+参与开发前请读 [CONTRIBUTING.md](CONTRIBUTING.md)（硬规矩：测试不联网、不硬编码个人路径、出网请求必须登记、一个改动一个 commit）。

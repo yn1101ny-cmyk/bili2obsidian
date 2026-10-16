@@ -1,0 +1,41 @@
+name: 功能建议
+description: 想要新能力，或现有行为想改
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 说场景比说方案更有用。比如「我看的课都没有字幕，每次都要等转写」。
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你想到的做法（可选）
+      description: 有具体想法就写，没有也行。
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 大概属于哪一块
+      options:
+        - 抓取（链接解析 / 字幕 / 音频 / 视频）
+        - 转写（Whisper / GPU / 语言）
+        - 笔记（结构 / 模型 / 提示词）
+        - 画面识别（OCR）
+        - 界面 / 命令行
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私前提
+      options:
+        - label: 这个建议默认在本机完成，不需要把内容发给第三方（需要发的话请在正文里说明）
+          required: false
