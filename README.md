@@ -4,14 +4,44 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11~3.13-blue.svg)](pyproject.toml)
 
-本地优先的「B站视频 → 可理解笔记 → Obsidian 知识库」工具（内部代号 MyNoteApp）。
+本地跑的「B站视频 → Markdown 笔记」工具，生成的笔记直接进你的 Obsidian 库。
+转写和整理都在本机完成，不调用任何云服务（内部代号 MyNoteApp）。
 
-把 B站视频链接丢进来，应用自动提取视频里的内容（官方字幕 / 本地语音转写 + 画面识别），
-整理成结构化笔记，并**指出你还需要自己搞清楚什么**，让碎片化的知识在
-更短的时间里被真正理解。
+给它一个 B站链接，它按「官方字幕 → 本地语音转写」的顺序把内容取下来；
+需要时再跑一遍画面识别（提示词、命令、配置单经常只出现在画面上），
+然后写成一篇带时间戳跳转的笔记：先说这篇的重点，再给能直接照做的部分，
+最后列出视频里没讲清楚、需要你自己去查的问题。
 
 > **第一次在这台电脑上装？** 逐步说明见 **[docs/INSTALL.md](docs/INSTALL.md)**：
 > Python 版本要求、Ollama、国内网络的两个必设项、B站字幕怎么配、常见报错怎么办。
+>
+> **想让它配合 Obsidian 用？** 见 **[docs/OBSIDIAN.md](docs/OBSIDIAN.md)**：
+> 三种接法（把输出目录放进库 / 只把笔记链接进库 / 手动搬）、
+> Dataview 查询示例、和 Local REST API + MCP 配合的做法、常见坑。
+
+---
+
+## 在 Obsidian 里怎么用
+
+一句话：**笔记就是普通 Markdown 文件，放进库目录就能用**，不需要任何 Obsidian 插件。
+
+最省事的一种，三步：
+
+1. 在库里建一个文件夹，比如 `_mynote`（别用 `.` 开头，Obsidian 会忽略点开头的文件夹）；
+2. `.env` 里写 `DATA_DIR=D:\MyVault\_mynote`；
+3. 重启（双击 `启动笔记.bat`）。之后生成的笔记落在 `D:\MyVault\_mynote\notes\`，
+   Obsidian 里立刻能搜到、能点时间戳跳回原视频。
+
+推荐的一种是让 `models/`（几百 MB ~ 2GB 的 Whisper 权重）和音频留在库外，
+只把 `notes` 用目录联结放进库：
+
+```powershell
+# .env: DATA_DIR=D:\MyNoteAppData
+mklink /J "D:\MyVault\视频笔记" "D:\MyNoteAppData\notes"
+```
+
+完整说明（含 Dataview 查询、插件配合、中文文件名与同步盘的坑）在
+**[docs/OBSIDIAN.md](docs/OBSIDIAN.md)**。
 
 ---
 
@@ -39,17 +69,17 @@ SQLite + 文件存储、一键清除数据、环境自检、命令行入口。
 
 ## 和同类工具的区别
 
-「视频转笔记」已经有不少项目（[BiliNote](https://github.com/JefferyHcool/BiliNote)、
+这类工具已经有不少（[BiliNote](https://github.com/JefferyHcool/BiliNote)、
 [video-to-notes](https://github.com/KIRVO-REPORTING/video-to-notes)、各类浏览器插件与 SaaS）。
-这个项目挑的是另一条路：
+这个项目走的是另一条路：
 
-| | 本项目的选择 |
+| | 这里怎么做 |
 |---|---|
-| **成本** | 全本地：转写用本机 GPU，摘要用本机 Ollama。**零 API 费用**，也不把视频内容发给任何云服务 |
-| **取材** | **字幕优先**：能拿到 B站官方字幕（人工或 AI）就直接用，拿不到才回落本地 Whisper —— 省时间也省算力 |
-| **画面** | 除了语音，还跑**画面 OCR**（提示词、代码、配置单往往只出现在画面上），并挑出信息量最大的**关键截图**一起入库 |
-| **产出** | 不是导出一份 Markdown 就完事：直接写进 Obsidian 库的指定主题文件夹，带 frontmatter、标签词表、`?t=` 时间戳跳转、双链与 MOC 主题地图 |
-| **过程** | 写笔记前先问「你想要什么（want）」，落盘时区分**视频原话**与**模型补充**，并列出存疑点与下一步 |
+| **成本** | 全本地：转写用本机 GPU，摘要用本机 Ollama。没有 API 费用，视频内容也不发给任何云服务 |
+| **取材** | 字幕优先：能拿到 B站官方字幕（人工或 AI）就用，拿不到才回落本地 Whisper |
+| **画面** | 除了语音，还跑画面 OCR（提示词、代码、配置单往往只出现在画面上），并挑出信息量最大的几张关键截图一起入库 |
+| **产出** | 直接写进 Obsidian 库的指定主题文件夹：带 frontmatter、`?t=` 时间戳跳转、双链与主题地图（MOC） |
+| **过程** | 写之前在库里先问你想要什么（want）；落盘时区分视频原话（✅）与模型补充，并列出存疑点 |
 
 ---
 
@@ -115,7 +145,7 @@ Copy-Item .env.example .env
 
 ### 界面
 
-三个页面，刻意做得极简：
+三个页面，没有多余功能：
 
 | 页面 | 内容 |
 |---|---|
@@ -163,7 +193,7 @@ Ollama registry 在国内也常被阻断（`dial tcp ... i/o timeout`）。
 
 ## 笔记长什么样
 
-**结构顺序就是阅读优先级**，不是视频的讲述顺序：
+**篇章顺序按「读者先想看什么」排，不按视频的讲述顺序**：
 
 ```markdown
 > 🎯 读完这篇你能做到          ← 先说你最终能拿到什么
@@ -223,7 +253,7 @@ pip install -r requirements-vision.txt   # 可选，不装也能用
 
 ### 为什么「待查清单」只给问题不给答案
 
-这是经过实测才定下来的设计，值得说明。
+这一节是踩坑之后改的。
 
 本地 8B 模型在细分领域**没有可靠的外部知识，却会自信地硬编**。
 同一个视频、同一份转写、同一句提示词，三次运行对「MGSD 的全称」
@@ -233,7 +263,7 @@ pip install -r requirements-vision.txt   # 可选，不装也能用
 这类错误一旦落进笔记，就变成**「自己记错的知识」**，比不生成更糟 ——
 而「补充理解」恰恰是本工具最核心的价值。
 
-关键洞察是模型有两种能力，强弱分明：
+实测下来，模型有两种能力，一强一弱：
 
 | 能力 | 表现 |
 |---|---|

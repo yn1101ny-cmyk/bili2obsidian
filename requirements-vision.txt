@@ -16,11 +16,24 @@
 
 # OCR 引擎。⚠️ 必须是新版 `rapidocr`；
 # 旧的 `rapidocr-onnxruntime` 声明 Requires-Python <3.13，在 3.13 上装不了。
-rapidocr>=3.9.2
+#: 上界 <3.10：只在 3.9.x 上实测过，钉住可让安装结果可复现。
+rapidocr>=3.9.2,<3.10
+
+#: ⚠️ Pillow 必须 >=10.4 —— 这是**第一个提供 Python 3.13 wheel 的版本**。
+#: 不写这一行时，pip 在回溯里会试到 Pillow 9.x，而 9.x 在 3.13 上没有
+#: 任何可用发行版，最终报出误导性的
+#: 「no matching distributions available for your environment: pillow」。
+Pillow>=10.4,<14
+
+#: rapidocr 依赖 opencv_python；这里把名字和上下界写明，
+#: 免得解析器在 opencv-python / opencv-python-headless 的
+#: 所有历史版本之间反复回溯。
+opencv-python>=4.10,<6
+numpy>=1.26,<3
 
 # 推理后端（CPU 即可 —— GPU 需要 CUDA 13 + cuDNN 9，要额外下 1.26GB 依赖，
 # 只为省一两分钟，不划算）
-onnxruntime>=1.20
+onnxruntime>=1.20,<2
 
 # B站 下载时提供浏览器指纹，降低被 412 拦截的概率
 curl-cffi>=0.7

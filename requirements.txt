@@ -25,6 +25,10 @@ yt-dlp>=2024.12.13
 
 # --- 本地语音转写 ---
 faster-whisper>=1.2.1
+#: ⚠️ 钉住 <2：huggingface-hub 2.x 换了一整条依赖链（多出 httpx2、
+#: httpcore2、truststore 三个包），本项目只实测过 1.x。不设上界时
+#: pip 会在 1.x/2.x 之间来回回溯，装得又慢又不可复现。
+huggingface-hub>=0.21,<2
 #: ⚠️ 4.6.3 是首个用 CUDA 12.8 构建的版本，也是首个真正支持
 #: Blackwell(RTX 50 系, sm_120) 的版本。低于它会报 no kernel image。
 ctranslate2>=4.6.3
