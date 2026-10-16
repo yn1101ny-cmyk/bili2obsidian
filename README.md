@@ -1,8 +1,12 @@
-# MyNoteApp
+# bili2obsidian
 
-本地优先的「B站视频 → 可理解笔记」工具。
+[![tests](https://github.com/yn1101ny-cmyk/bili2obsidian/actions/workflows/tests.yml/badge.svg)](https://github.com/yn1101ny-cmyk/bili2obsidian/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11~3.13-blue.svg)](pyproject.toml)
 
-把 B站视频链接丢进来，应用自动提取视频里的内容（字幕 / 本地语音转写），
+本地优先的「B站视频 → 可理解笔记 → Obsidian 知识库」工具（内部代号 MyNoteApp）。
+
+把 B站视频链接丢进来，应用自动提取视频里的内容（官方字幕 / 本地语音转写 + 画面识别），
 整理成结构化笔记，并**指出你还需要自己搞清楚什么**，让碎片化的知识在
 更短的时间里被真正理解。
 
@@ -33,6 +37,22 @@ SQLite + 文件存储、一键清除数据、环境自检、命令行入口。
 
 ---
 
+## 和同类工具的区别
+
+「视频转笔记」已经有不少项目（[BiliNote](https://github.com/JefferyHcool/BiliNote)、
+[video-to-notes](https://github.com/KIRVO-REPORTING/video-to-notes)、各类浏览器插件与 SaaS）。
+这个项目挑的是另一条路：
+
+| | 本项目的选择 |
+|---|---|
+| **成本** | 全本地：转写用本机 GPU，摘要用本机 Ollama。**零 API 费用**，也不把视频内容发给任何云服务 |
+| **取材** | **字幕优先**：能拿到 B站官方字幕（人工或 AI）就直接用，拿不到才回落本地 Whisper —— 省时间也省算力 |
+| **画面** | 除了语音，还跑**画面 OCR**（提示词、代码、配置单往往只出现在画面上），并挑出信息量最大的**关键截图**一起入库 |
+| **产出** | 不是导出一份 Markdown 就完事：直接写进 Obsidian 库的指定主题文件夹，带 frontmatter、标签词表、`?t=` 时间戳跳转、双链与 MOC 主题地图 |
+| **过程** | 写笔记前先问「你想要什么（want）」，落盘时区分**视频原话**与**模型补充**，并列出存疑点与下一步 |
+
+---
+
 ## 快速开始
 
 **需要什么**：Windows 10/11 + Python **3.11~3.13**；（可选，想快很多）NVIDIA 显卡；（生成笔记用）本机 [Ollama](https://ollama.com/download) 拉一个 `qwen3:8b`。
@@ -41,8 +61,8 @@ ffmpeg 不用自己装，依赖里自带。
 ### 第 0 步：把项目拿到本地
 
 ```powershell
-git clone https://github.com/yn1101ny-cmyk/mynoteapp.git
-cd mynoteapp
+git clone https://github.com/yn1101ny-cmyk/bili2obsidian.git
+cd bili2obsidian
 ```
 
 没有 git 就在 GitHub 页面点 **Code → Download ZIP**，解压后进目录继续。

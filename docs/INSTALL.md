@@ -24,8 +24,8 @@
 ## 二、复制项目 + 装依赖
 
 ```powershell
-git clone https://github.com/yn1101ny-cmyk/mynoteapp.git
-cd mynoteapp
+git clone https://github.com/yn1101ny-cmyk/bili2obsidian.git
+cd bili2obsidian
 
 # 1) 建虚拟环境（只用这个 venv，不要装到系统 Python）
 python -m venv .venv
