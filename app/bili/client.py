@@ -170,8 +170,14 @@ class BiliClient:
         cache_key: str | None = None,
         use_cache: bool = True,
         allow_codes: tuple[int, ...] = (),
+        require_code: bool = True,
     ) -> dict[str, Any]:
-        """GET 一个 B站 JSON 接口，带缓存 / 限速 / 退避重试。"""
+        """GET 一个 B站 JSON 接口，带缓存 / 限速 / 退避重试。
+
+        ``require_code=False`` 用于那些**本来就没有 ``code`` 字段**的资源
+        （例如 B站字幕 CDN 返回的 ``{"body": [...]}``）：不做业务码校验，
+        由调用方自行判断内容是否可用。
+        """
         if use_cache and cache_key:
             cached = self._cache_read(cache_key)
             if cached is not None:
@@ -220,7 +226,7 @@ class BiliClient:
                 raise BiliApiError(url, None, f"返回结构异常：{str(data)[:200]}")
 
             code = data.get("code")
-            if code != 0 and code not in allow_codes:
+            if require_code and code != 0 and code not in allow_codes:
                 hint = _CODE_HINTS.get(code, "")
                 msg = data.get("message") or data.get("msg") or ""
                 detail = f"{msg} {hint}".strip()
@@ -420,11 +426,12 @@ class BiliClient:
     async def fetch_subtitle(self, track: SubtitleTrack) -> list[TranscriptSegment]:
         """下载并解析字幕内容。"""
         url = normalize_subtitle_url(track.url)
-        # 字幕存在 CDN 上，走同一条限速与重试逻辑
+        # 字幕存在 CDN 上，走同一条限速与重试逻辑；
+        # CDN 返回的是 {"body": [...]}，本来就没有 code 字段，故不做业务码校验
         data = await self._get_json(
             url,
             cache_key=f"subtitle:{url}",
-            allow_codes=(),
+            require_code=False,
         )
         segments = parse_subtitle_body(data)
         if not segments:
