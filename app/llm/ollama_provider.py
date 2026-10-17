@@ -59,6 +59,15 @@ class OllamaProvider(LLMProvider):
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=httpx.Timeout(self.timeout, connect=10.0),
+                # Ollama 在本机（或内网），不该走系统代理。
+                #
+                # 坑：httpx 默认 trust_env=True，会用 urllib.getproxies() 读代理，
+                # 而它在 Windows 上读的是注册表里的「系统代理」。只要装过
+                # Clash/V2Ray 之类并开过系统代理，连 http://127.0.0.1:11434
+                # 也会被塞进 http://127.0.0.1:7897 走一遭，代理不接受本地
+                # 目标就回一个空 body 的 502 —— 表现是「Ollama 明明在跑，
+                # 却一直报 Ollama 返回 HTTP 502」。关掉 env 代理直连才对。
+                trust_env=False,
             )
         return self._client
 

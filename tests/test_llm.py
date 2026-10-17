@@ -453,3 +453,31 @@ async def test_ollama_reports_as_not_remote_on_loopback():
     p = OllamaProvider(base_url=OLLAMA, model="m")
     assert p.is_remote is False
     await p.aclose()
+
+# ---------------------------------------------------------------------------
+# 本地模型不能走系统代理
+# ---------------------------------------------------------------------------
+async def test_ollama_client_bypasses_system_proxy(monkeypatch):
+    """⛔ 回归守卫：访问本地 Ollama 必须绕开环境代理。
+
+    实测踩坑：Windows 上开着 Clash/V2Ray 的「系统代理」时，httpx 默认
+    trust_env=True，会用 urllib.getproxies() 读到注册表里的代理，把
+    http://127.0.0.1:11434 也导向代理；代理不接受本地目标，就回一个
+    空 body 的 502 —— 表现是「Ollama 明明在跑，却一直报 HTTP 502」。
+    """
+    captured: dict[str, object] = {}
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.llm.ollama_provider.httpx.AsyncClient", fake_client)
+
+    p = OllamaProvider(base_url=OLLAMA, model="m")
+    try:
+        p._get_client()
+    finally:
+        await p.aclose()
+
+    assert captured.get("trust_env") is False

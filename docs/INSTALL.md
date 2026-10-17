@@ -178,6 +178,12 @@ HF_DISABLE_XET=true
 **OCR 很慢**
 `VISION_OCR_THREADS` 别填满逻辑核。实测在 8P+16E 的混合架构上，24 线程比 8 线程**慢 3.5 倍**（2.88s/帧 vs 0.82s/帧）。
 
+**Ollama 明明在跑，却一直报 `Ollama 返回 HTTP 502`（响应体是空的）**
+系统代理干的。装了 Clash/V2Ray 之类并开着「系统代理」时，httpx 会读到注册表里的代理，
+把 `http://127.0.0.1:11434` 也绕进代理，而代理通常不接受本地目标，就回一个空 body 的 502。
+本项目已经给 Ollama 客户端关掉 `trust_env`，直连本机；如果你改过 `app/llm/ollama_provider.py`
+或换成了自己的客户端，记得别让它读环境代理。自检能帮你确认：`python -m scripts.doctor`。
+
 **端口被占用**
 `.env` 里改 `PORT`。
 
