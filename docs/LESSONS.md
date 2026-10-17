@@ -364,6 +364,12 @@ RapidOCR(params={"EngineConfig.onnxruntime.intra_op_num_threads": self.threads})
 }
 ```
 
+**补充（上限别设太小）**：一开始上限是 4096，够防“吐到超时”，但对**中文 JSON**
+仍然偏紧 —— 实测一条 6 分半的视频，模型写到 `actionables` 中途就撞上限，
+两次尝试都没能给出合法 JSON（`LLMOutputInvalid`）。现在默认 8192。
+上限是“防失控”的护栏，不是“省时间”的开关：定得太低，正常长度的笔记也会
+被一刀截断。
+
 ## 2.5 `num_ctx` 与显存：大窗口不一定跑得动
 
 📐 上下文窗口不是免费的。开 16,384 的窗口时，KV cache 本身就要几个 GB。
