@@ -244,6 +244,21 @@ def render_note_markdown(
             parts.append(f"- **{u.item.strip()}** — {u.reason.strip()}")
         parts.append("")
 
+    # ---- 高赞评论（观众勘误）----
+    # 有就放，没有就不出这一节。评论原文照录，判断交给读者。
+    if meta.comments:
+        parts += [
+            "## 💬 高赞评论（观众补充与勘误）",
+            "",
+            "*视频下方的高赞评论原文。可能是勘误，也可能是错的，用之前自己判断。*",
+            "",
+        ]
+        for c in meta.comments[:20]:
+            who = "UP主" if c.is_up else (c.user or "匿名")
+            text = " ".join(c.text.split())
+            parts.append(f"- **{who}**（👍 {c.like}）：{text}")
+        parts.append("")
+
     return "\n".join(parts).rstrip() + "\n"
 
 

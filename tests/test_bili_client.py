@@ -249,3 +249,77 @@ async def test_aid_only_ref_does_not_try_page(settings) -> None:
             await bili.get_video_meta(_ref(bvid=None, aid=999))
 
     assert route.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# 高赞评论（观众勘误）
+# ---------------------------------------------------------------------------
+
+REPLY_URL = "https://api.bilibili.com/x/v2/reply"
+
+
+def _reply_payload(replies: list[dict]) -> dict:
+    return {
+        "code": 0,
+        "message": "0",
+        "data": {"replies": replies},
+    }
+
+
+def _reply(
+    *,
+    user: str = "某人",
+    mid: int = 1,
+    like: int = 0,
+    message: str = "这条评论有点内容",
+) -> dict:
+    return {
+        "member": {"uname": user, "mid": mid},
+        "like": like,
+        "content": {"message": message},
+    }
+
+
+@respx.mock
+async def test_top_comments_sorted_filtered_and_marked(settings) -> None:
+    """评论按点赞降序、去掉空/重复、能标出 UP 主本人。"""
+    payload = _reply_payload(
+        [
+            _reply(user="甲", like=3, message="UP 说错了，型号是 MGSD 不是 RG\n配色也不一样"),
+            _reply(user="乙", like=99, message="8:30 那句我确认过，是对的"),
+            _reply(user="丙", like=50, message="[doge]"),  # 太短
+            _reply(user="丁", like=50, message="8:30 那句我确认过，是对的"),  # 重复
+            _reply(user="戊", like=40, message="省流总结看这里 https://pan.quark.cn/s/abc"),  # 引流
+            _reply(user="UP", mid=42, like=7, message="补充一下：这个券只在周五可用"),
+        ]
+    )
+    respx.get(REPLY_URL).mock(return_value=httpx.Response(200, json=payload))
+
+    async with BiliClient(settings) as bili:
+        comments = await bili.get_top_comments(123, owner_mid=42, limit=5)
+
+    assert [c.like for c in comments] == [99, 7, 3]
+    assert comments[0].text.startswith("8:30")
+    assert comments[1].is_up is True
+    assert comments[1].user == "UP"
+    # 换行被压平成一行，方便塞进提示词与笔记
+    assert "\n" not in comments[2].text
+    assert comments[2].is_up is False
+
+
+@respx.mock
+async def test_top_comments_failure_is_not_fatal(settings) -> None:
+    """评论接口报错（含风控）时返回空列表，不拖垮出笔记。"""
+    local = settings.model_copy(update={"bili_max_retries": 0})
+    respx.get(REPLY_URL).mock(
+        return_value=httpx.Response(200, json={"code": -412, "message": "风控"})
+    )
+
+    async with BiliClient(local) as bili:
+        assert await bili.get_top_comments(123, limit=5) == []
+
+
+async def test_top_comments_disabled_does_not_request(settings) -> None:
+    """BILI_TOP_COMMENTS=0 时不该发请求。"""
+    async with BiliClient(settings) as bili:
+        assert await bili.get_top_comments(123, limit=0) == []

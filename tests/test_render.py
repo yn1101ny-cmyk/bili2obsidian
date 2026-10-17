@@ -22,6 +22,7 @@ from app.notes.render import (
 from app.schemas import (
     Actionable,
     ActionableKind,
+    Comment,
     Concept,
     FocusPoint,
     FollowUp,
@@ -467,3 +468,24 @@ def test_index_escapes_pipes():
     ]
     md = render_index_markdown(records)
     assert "\\|" in md
+
+
+def test_comments_section_rendered_when_present(note, meta, transcript):
+    """有高赞评论时单独出一节，原文照录并标出点赞数与 UP 主。"""
+    meta = meta.model_copy(
+        update={
+            "comments": [
+                Comment(user="甲", like=99, text="UP 说错了，型号是 MGSD\n不是 RG"),
+                Comment(user="UP主", like=7, text="补充：这个券只在周五可用", is_up=True),
+            ]
+        }
+    )
+    md = render_note_markdown(note, meta, transcript)
+
+    assert "## 💬 高赞评论（观众补充与勘误）" in md
+    assert "**甲**（👍 99）：UP 说错了，型号是 MGSD 不是 RG" in md
+    assert "**UP主**（👍 7）：补充：这个券只在周五可用" in md
+
+
+def test_no_comments_section_without_comments(note, meta, transcript):
+    assert "高赞评论" not in render_note_markdown(note, meta, transcript)

@@ -35,13 +35,22 @@ from app.bili.subtitles import (
 from app.bili.urls import VideoRef
 from app.config import Settings
 from app.errors import BiliApiError, InvalidVideoUrl, NoTranscriptAvailable
-from app.schemas import Chapter, Transcript, TranscriptSegment, VideoMeta, VideoPage
+from app.schemas import (
+    Chapter,
+    Comment,
+    Transcript,
+    TranscriptSegment,
+    VideoMeta,
+    VideoPage,
+)
 
 logger = logging.getLogger(__name__)
 
 _API_VIEW = "https://api.bilibili.com/x/web-interface/view"
 _API_PLAYER = "https://api.bilibili.com/x/player/v2"
 _API_TAGS = "https://api.bilibili.com/x/tag/archive/tags"
+#: 评论区（type=1 表示视频，sort=2 表示按热度）
+_API_REPLY = "https://api.bilibili.com/x/v2/reply"
 _API_NAV = "https://api.bilibili.com/x/web-interface/nav"
 _API_FINGER = "https://api.bilibili.com/x/frontend/finger/spi"
 
@@ -557,6 +566,72 @@ class BiliClient:
                 if name:
                     out.append(name)
         return out
+
+    # ------------------------------------------------------------------
+    # 评论（观众勘误）
+    # ------------------------------------------------------------------
+    async def get_top_comments(
+        self,
+        aid: int,
+        *,
+        owner_mid: int | None = None,
+        limit: int = 20,
+    ) -> list[Comment]:
+        """拉取高赞评论，给笔记做「观众勘误」。
+
+        ``sort=2`` 表示按热度排序，所以拿到的就是最靠前的那些。
+        会去掉空评论与重复内容，按点赞数降序返回。
+
+        评论是锦上添花：任何一步失败都返回空列表，不阻塞出笔记。
+        """
+        if limit <= 0 or aid <= 0:
+            return []
+
+        try:
+            data = await self._get_json(
+                _API_REPLY,
+                params={
+                    "type": 1,
+                    "oid": aid,
+                    "sort": 2,
+                    "ps": min(limit, 49),
+                    "pn": 1,
+                },
+                cache_key=f"reply:{aid}:{limit}",
+            )
+        except Exception as exc:  # noqa: BLE001 - 评论拿不到不影响出笔记
+            logger.debug("获取评论失败（不影响出笔记）：%s", exc)
+            return []
+
+        replies = (data.get("data") or {}).get("replies") or []
+        out: list[Comment] = []
+        seen: set[str] = set()
+        for r in replies:
+            if not isinstance(r, dict):
+                continue
+            message = ((r.get("content") or {}).get("message") or "").strip()
+            text = " ".join(message.split())
+            # 去掉 [doge] 这类表情码，剩下的太短就没有信息量
+            plain = re.sub(r"\[[^\]]{1,12}\]", "", text).strip()
+            # 带链接的大多是引流/广告（实测评论区前排就有），别写进笔记
+            if len(plain) < 6 or text in seen or "http" in text.lower():
+                continue
+            seen.add(text)
+            member = r.get("member") or {}
+            mid = member.get("mid")
+            out.append(
+                Comment(
+                    user=str(member.get("uname") or "").strip(),
+                    like=int(r.get("like") or 0),
+                    text=text[:300],
+                    is_up=bool(owner_mid) and isinstance(mid, int) and mid == owner_mid,
+                )
+            )
+
+        out.sort(key=lambda c: c.like, reverse=True)
+        if out:
+            logger.info("拿到 %d 条高赞评论（观众勘误素材）", len(out))
+        return out[:limit]
 
     # ------------------------------------------------------------------
     # 字幕

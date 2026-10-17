@@ -222,7 +222,12 @@ def flatten_schema(model: type[BaseModel]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def build_meta_header(meta: VideoMeta, *, max_desc_chars: int = 1200) -> str:
+def build_meta_header(
+    meta: VideoMeta,
+    *,
+    max_desc_chars: int = 1200,
+    include_comments: bool = False,
+) -> str:
     """把视频的**非音频信号**整理成提示词头部。
 
     这些信息全都不是从音频里来的，但对「抓重点」极有价值：
@@ -230,7 +235,8 @@ def build_meta_header(meta: VideoMeta, *, max_desc_chars: int = 1200) -> str:
     * **标题** —— 用户最直接的意图来源（用户明确要求用它抓重点）；
     * **简介** —— 教程类视频常把大纲、链接、甚至提示词写在这里；
     * **标签** —— 主题词，帮助判断领域；
-    * **章节** —— B站 AI 划分（未登录可得），相当于现成的主干结构。
+    * **章节** —— B站 AI 划分（未登录可得），相当于现成的主干结构；
+    * **高赞评论** —— 只作为勘误线索，默认不放进切块阶段的提示词（省 token）。
     """
     lines = [
         f"视频标题：{meta.display_title}",
@@ -253,6 +259,21 @@ def build_meta_header(meta: VideoMeta, *, max_desc_chars: int = 1200) -> str:
             f"  [{c.clock()}] {c.title}" for c in meta.chapters[:20]
         )
 
+    if include_comments and meta.comments:
+        lines.append(build_comments_section(meta))
+
+    return "\n".join(lines)
+
+
+def build_comments_section(meta: VideoMeta, *, max_items: int = 20, max_chars: int = 220) -> str:
+    """把高赞评论整理成提示词片段（观众勘误与补充）。"""
+    lines = ["高赞评论（观众留言，只能当勘误线索，不是视频内容）："]
+    for c in meta.comments[:max_items]:
+        text = c.text.strip()
+        if len(text) > max_chars:
+            text = text[:max_chars] + "…"
+        who = "UP主" if c.is_up else (c.user or "匿名")
+        lines.append(f"  [赞{c.like}] {who}：{text}")
     return "\n".join(lines)
 
 
@@ -500,7 +521,9 @@ def build_reduce_prompt(
             lines += [f"  - {u[:detail_chars]}" for u in items]
         blocks.append("\n".join(lines))
 
-    header = build_meta_header(meta, max_desc_chars=600)
+    header = build_meta_header(
+        meta, max_desc_chars=600, include_comments=not compact
+    )
     if transcript_source_label:
         header += f"\n转写来源：{transcript_source_label}（自动转写可能有错字，请注意甄别）"
 
@@ -547,6 +570,10 @@ SINGLE_INSTRUCTIONS = """请根据下面的完整视频转写，写出一份让�
   ⛔ **只提问，不要给答案。** 你没有可靠的外部知识，
   编一个看起来合理的解释会害了读者。2-5 条。
 - uncertainties：存疑、错字、矛盾，去重后最多 5 条。
+- 如果材料里带了「高赞评论」，那是观众在视频下方的留言：
+  **只当勘误线索**，不要当视频内容。评论指出视频说错的地方、
+  或者补了更准的数据/型号，把这类内容写进 key_points 或 uncertainties，
+  并注明「（评论区指出）」。评论没提到的，一律不要写成视频里讲了。
 
 时间戳规则：**原样抄写**转写里的 [mm:ss] 标记，不要换算成秒数，
 每条各不相同且递增，找不到就填 null。
@@ -562,7 +589,7 @@ def build_single_prompt(
     focus: FocusPlan | None = None,
     screen_text: str = "",
 ) -> str:
-    header = build_meta_header(meta, max_desc_chars=600)
+    header = build_meta_header(meta, max_desc_chars=600, include_comments=True)
     if transcript_source_label:
         header += f"\n转写来源：{transcript_source_label}"
     screen_block = build_screen_section(screen_text)

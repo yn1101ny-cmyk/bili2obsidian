@@ -197,6 +197,15 @@ class NotePipeline:
             if meta.aid is not None and meta.cid:
                 meta.chapters = await bili.get_chapters(meta.aid, meta.cid)
 
+            # 高赞评论：观众经常在下面指出视频里的错误、补上更准的型号或数据。
+            # 跟截图、字幕一样属于锦上添花，拿不到不影响出笔记。
+            if self.settings.bili_top_comments > 0 and meta.aid is not None:
+                meta.comments = await bili.get_top_comments(
+                    meta.aid,
+                    owner_mid=meta.owner_mid,
+                    limit=self.settings.bili_top_comments,
+                )
+
             page = meta.page
             cid = meta.cid or 0
 
@@ -205,7 +214,8 @@ class NotePipeline:
                 0.07,
                 f"《{meta.display_title}》"
                 + (f"（共 {meta.total_pages} P）" if meta.total_pages > 1 else "")
-                + (f"（含 {len(meta.chapters)} 个章节）" if meta.chapters else ""),
+                + (f"（含 {len(meta.chapters)} 个章节）" if meta.chapters else "")
+                + (f"（{len(meta.comments)} 条高赞评论）" if meta.comments else ""),
             )
 
             # ---------------- 3. 转写：缓存 → 字幕 → Whisper ----------------

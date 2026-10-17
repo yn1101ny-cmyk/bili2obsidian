@@ -100,6 +100,19 @@ class Chapter(BaseModel):
         return format_clock(self.start)
 
 
+class Comment(BaseModel):
+    """一条高赞评论。"""
+
+    #: 用户名（已去掉多余空白）
+    user: str = ""
+    #: 点赞数
+    like: int = 0
+    #: 评论正文（已把换行压成空格、截断到合理长度）
+    text: str
+    #: 是否 UP 主本人发的（或回复）
+    is_up: bool = False
+
+
 class VideoMeta(BaseModel):
     """视频元数据。"""
 
@@ -117,6 +130,9 @@ class VideoMeta(BaseModel):
     tags: list[str] = Field(default_factory=list)
     #: 章节（B站 AI 生成的 view_points）
     chapters: list[Chapter] = Field(default_factory=list)
+    #: 高赞评论（观众勘误与补充，见 ``BILI_TOP_COMMENTS``）。
+    #: 只当线索用：评论区可能说错，也可能比视频本身更靠谱。
+    comments: list[Comment] = Field(default_factory=list)
     #: 当前处理的 cid / 分P序号（从 1 开始）
     cid: int | None = None
     page: int = 1

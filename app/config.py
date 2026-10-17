@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     bili_timeout: float = Field(default=20.0, gt=0.0)
     #: 风控退避重试次数
     bili_max_retries: int = Field(default=3, ge=0, le=10)
+    #: 抓多少条高赞评论用于「观众勘误」（0 = 关闭）。
+    #: 评论区经常有人指出视频里的错误、补上更准的型号或数据，
+    #: 对教程和评测类视频尤其有用。
+    bili_top_comments: int = Field(default=20, ge=0, le=50)
     #: 缓存元数据/字幕，避免重复出网
     cache_ttl_hours: float = Field(default=24.0 * 7, ge=0.0)
 
