@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -32,6 +33,25 @@ _FORMAT_SELECTOR = "ba[ext=m4a]/ba/b"
 
 #: 文件名里不允许出现的字符
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def video_format_selector(max_height: int) -> str:
+    """挑「只含视频轨」的格式，分辨率压到 ``max_height`` 以内。
+
+    竖屏视频（B站很常见）高宽是反的：1080×1920 的片源 ``height`` 是 1920，
+    用 ``height<=480`` 一个都匹配不上，yt-dlp 直接报
+    ``No video formats found!`` —— 抽帧 OCR 就这么悄悄失败了。
+    所以先按 height 找，再退回按 width 找，最后才退到完整文件。
+    """
+    h = max(1, int(max_height))
+    return (
+        f"bv*[height<={h}][ext=mp4]/"
+        f"bv*[height<={h}]/"
+        f"bv*[width<={h}]/"
+        f"b[height<={h}]/"
+        f"b"
+    )
+
 
 ProgressCb = Callable[[float, str], None] | None
 
@@ -263,10 +283,7 @@ class AudioDownloader:
             base_opts: dict = {
                 # 只要视频轨；分辨率压到 max_height 以内。
                 # 抽帧做 OCR 用 360p/480p 足够 —— 实测 20 分钟 @360p 约 40~60MB。
-                "format": (
-                    f"bv*[height<={max_height}][ext=mp4]/"
-                    f"bv*[height<={max_height}]/b[height<={max_height}]/b"
-                ),
+                "format": video_format_selector(max_height),
                 "outtmpl": str(out_base) + ".%(ext)s",
                 "quiet": True,
                 "no_warnings": True,
@@ -284,16 +301,17 @@ class AudioDownloader:
             if location:
                 base_opts["ffmpeg_location"] = location
 
-            # ⚠️ impersonate 要不要带，实测很反直觉：
+            # ⚠️ B站 的下载接口很看心情，同一视频、同样选项实测：
             #
-            #   不带                                   → ✓ 拿到 15 个格式
-            #   ImpersonateTarget("chrome")            → ✓ 拿到 15 个格式
-            #   ImpersonateTarget("chrome", "136")     → ✗ No video formats found!
+            #   默认指纹                              → ✓ 拿到 15 个格式
+            #   显式 ImpersonateTarget("chrome")      → 时好时坏：有时 15 个格式，
+            #                                           有时直接空格式表 →
+            #                                           No video formats found!
+            #   显式 ImpersonateTarget("chrome","136") → ✗ 必失败
             #
-            # 而且「不带」和「带 chrome」**单独都能用**，一旦和上面这堆
-            # 选项组合起来，带 impersonate 的那个就会失败。
-            # B站 的行为也会随版本变化，所以这里不赌单一路径：
-            # **先按默认来，失败了再退回显式 impersonate**。
+            # 「空格式表」是**间歇性**风控，不是选项永久不兼容 —— 隔几秒再来
+            # 一次往往就能过。所以这里不赌单一路径：先按默认来，失败了退回
+            # 显式指纹；两路都失败也不是终点，整轮再来一次。
             attempts: list[tuple[str, object | None]] = [("默认", None)]
             try:
                 from yt_dlp.networking.impersonate import ImpersonateTarget
@@ -305,24 +323,31 @@ class AudioDownloader:
                 logger.debug("yt-dlp 不支持 impersonate：%s", exc)
 
             last_error: Exception | None = None
-            for label, target in attempts:
-                opts = dict(base_opts)
-                if target is not None:
-                    opts["impersonate"] = target
-                try:
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        ydl.download([url])
-                except Exception as exc:  # noqa: BLE001
-                    last_error = exc
-                    logger.warning("下载视频失败（%s）：%s", label, exc)
-                    continue
+            for round_no in range(1, 3):
+                for label, target in attempts:
+                    opts = dict(base_opts)
+                    if target is not None:
+                        opts["impersonate"] = target
+                    try:
+                        with yt_dlp.YoutubeDL(opts) as ydl:
+                            ydl.download([url])
+                    except Exception as exc:  # noqa: BLE001
+                        last_error = exc
+                        logger.warning(
+                            "下载视频失败（第 %d 轮 · %s）：%s", round_no, label, exc
+                        )
+                        continue
 
-                found = self._find_existing(out_base, video_only=True)
-                if found is not None:
-                    if label != attempts[0][0]:
-                        logger.info("改用「%s」后才下载成功", label)
-                    return found
-                last_error = DownloadError("yt-dlp 报告完成但没有生成视频文件")
+                    found = self._find_existing(out_base, video_only=True)
+                    if found is not None:
+                        if label != attempts[0][0]:
+                            logger.info("改用「%s」后才下载成功", label)
+                        return found
+                    last_error = DownloadError("yt-dlp 报告完成但没有生成视频文件")
+
+                if round_no < 2:
+                    logger.info("视频整轮下载失败，2 秒后重试")
+                    time.sleep(2)
 
             raise DownloadError(
                 f"下载视频失败：{last_error}\n"

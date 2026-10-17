@@ -164,7 +164,11 @@ class Settings(BaseSettings):
     #:
     #: 有了上限，最坏情况变成「很快返回一段被截断的内容」，
     #: 而截断的 JSON 通常还能被解析出部分结果，好过彻底失败。
-    llm_num_predict: int = Field(default=4096, ge=256, le=32768)
+    #:
+    #: 4096 对「长视频 + 中文 JSON」偏小：实测一条 6 分半的视频，模型写到
+    #: actionables 中途就撞上限，两次都拿不到合法 JSON。8192 留出余量，
+    #: 又不至于让小模型一口气吐太久。
+    llm_num_predict: int = Field(default=8192, ge=256, le=32768)
 
     #: 以下三项只在 allow_cloud=True 时才会被使用
     allow_cloud: bool = False
