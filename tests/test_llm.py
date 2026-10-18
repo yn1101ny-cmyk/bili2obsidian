@@ -23,6 +23,7 @@ from app.llm.base import (
     truncate_middle,
 )
 from app.llm.ollama_provider import OllamaProvider
+from app.llm.openai_provider import OpenAICompatProvider
 from app.notes.prompts import PartialNotes, flatten_schema
 from app.schemas import Note
 
@@ -481,3 +482,55 @@ async def test_ollama_client_bypasses_system_proxy(monkeypatch):
         await p.aclose()
 
     assert captured.get("trust_env") is False
+
+
+# ---------------------------------------------------------------------------
+# 本地 OpenAI 兼容服务（Ollama /v1、LM Studio）同样不能走代理
+# ---------------------------------------------------------------------------
+async def test_openai_compat_client_bypasses_proxy_for_local_endpoint(monkeypatch):
+    captured: dict[str, object] = {}
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.llm.openai_provider.httpx.AsyncClient", fake_client)
+
+    p = OpenAICompatProvider(
+        base_url="http://127.0.0.1:11434/v1",
+        api_key="x",
+        model="qwen3:8b",
+        consent=True,
+    )
+    try:
+        p._get_client()
+    finally:
+        await p.aclose()
+
+    assert captured.get("trust_env") is False
+
+
+async def test_openai_compat_client_keeps_proxy_for_real_cloud(monkeypatch):
+    """真云端要走系统代理，不能一刀切地关掉。"""
+    captured: dict[str, object] = {}
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        captured.update(kwargs)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("app.llm.openai_provider.httpx.AsyncClient", fake_client)
+
+    p = OpenAICompatProvider(
+        base_url="https://api.deepseek.com/v1",
+        api_key="x",
+        model="deepseek-chat",
+        consent=True,
+    )
+    try:
+        p._get_client()
+    finally:
+        await p.aclose()
+
+    assert captured.get("trust_env") is True

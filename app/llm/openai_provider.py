@@ -12,12 +12,28 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
 from app.errors import CloudNotAllowed, LLMError
 from app.llm.base import LLMProvider
+
+#: 指向这些主机的 OpenAI 兼容服务其实是「本地模型」（Ollama /v1、LM Studio）。
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_local_endpoint(url: str) -> bool:
+    """这个 base_url 是不是本机地址。"""
+    host = (urlparse(url).hostname or "").strip("[]")
+    if host in _LOOPBACK_HOSTS:
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -53,9 +69,13 @@ class OpenAICompatProvider(LLMProvider):
     # ------------------------------------------------------------------
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # 真云端（api.deepseek.com 等）该走系统代理；但 base_url 指向本机时
+            # （Ollama 的 /v1、LM Studio）必须绕开代理，否则代理会回一个空 body
+            # 的 502 —— 和 OllamaProvider 踩过的是同一个坑。
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=httpx.Timeout(self.timeout, connect=15.0),
+                trust_env=not _is_local_endpoint(self.base_url),
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
