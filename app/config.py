@@ -176,6 +176,35 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_model: str = "deepseek-chat"
 
+    # ------------------------------------------------------------------
+    # 本地出稿 + 云端单次润色（默认关闭）
+    # ------------------------------------------------------------------
+    #: 本地模型先按现有流程把笔记**完整生成**（0 元、数据不出本机），
+    #: 再把「已经成稿的笔记结构」交给云端模型改一遍：重排结构、去 AI 味、
+    #: 加作者口吻。**只调用一次，不重新读转写**。
+    #:
+    #: 为什么这样分工：本地 8B 模型「把事实抽全」够用，但「写得像人」
+    #: 明显不行；云端整篇重写又贵、还容易把时间戳和细节写丢。
+    #: 让本地负责「准」、云端负责「顺」，一篇长视频的润色成本只要几分钱。
+    #:
+    #: ⚠️ 仍受 ``ALLOW_CLOUD`` 约束：没有显式授权就不外发任何内容。
+    polish_enabled: bool = False
+    #: 润色用的接口与模型。留空则复用 ``OPENAI_*``。
+    polish_base_url: str = ""
+    polish_api_key: str | None = None
+    polish_model: str = ""
+    polish_timeout: float = Field(default=180.0, gt=0.0)
+    #: 润色输出上限。笔记正文一般 3000~8000 字，8192 够用。
+    polish_max_tokens: int = Field(default=8192, ge=512, le=32768)
+    #: 润色温度。比正文生成（0.0）高一点，留出改写的余地；
+    #: 太高会把事实改走样，0.5 是实测比较稳的点。
+    polish_temperature: float = Field(default=0.5, ge=0.0, le=1.2)
+    #: 额外的润色要求，直接拼进提示词。
+    #: 例如「我的风格：短句、少用破折号、别用『首先/其次』」。
+    polish_instructions: str = ""
+    #: 初稿超过这么多 token 就不润色（避免异常长笔记烧钱）。
+    polish_max_input_tokens: int = Field(default=24000, ge=1000)
+
     #: 每次送给模型的字符数上限（控制显存/上下文占用）
     llm_chunk_chars: int = Field(default=2400, ge=400, le=20000)
     #: 分块之间的重叠字符数，避免切断上下文
@@ -259,6 +288,21 @@ class Settings(BaseSettings):
         return self.llm_provider == "openai" and self.allow_cloud
 
     @property
+    def polish_ready(self) -> bool:
+        """云端润色是否真正可用。
+
+        三个条件缺一不可：开启开关、显式授权外发、拿到 API Key；
+        另外，如果整篇笔记本来就由云端生成（``LLM_PROVIDER=openai``），
+        再润色一遍只是白花钱，直接跳过。
+        """
+        if not self.polish_enabled or not self.allow_cloud:
+            return False
+        if self.llm_provider == "openai":
+            return False
+        key = self.polish_api_key or self.openai_api_key or ""
+        return bool(key.strip())
+
+    @property
     def has_bili_login(self) -> bool:
         return bool(self.bili_sessdata and self.bili_sessdata.strip())
 
@@ -272,6 +316,9 @@ class Settings(BaseSettings):
             "ollama_model": self.ollama_model,
             "allow_cloud": self.allow_cloud,
             "cloud_enabled": self.cloud_enabled,
+            "polish_enabled": self.polish_enabled,
+            "polish_ready": self.polish_ready,
+            "polish_model": self.polish_model or self.openai_model,
             "openai_api_key": "***已设置***" if self.openai_api_key else None,
             "bili_sessdata": "***已设置***" if self.has_bili_login else None,
             "whisper_model": self.whisper_model,

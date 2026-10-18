@@ -31,6 +31,7 @@ class OpenAICompatProvider(LLMProvider):
         model: str,
         timeout: float = 300.0,
         consent: bool = False,
+        max_tokens: int | None = None,
     ) -> None:
         if not consent:
             raise CloudNotAllowed()
@@ -43,6 +44,8 @@ class OpenAICompatProvider(LLMProvider):
         self.api_key = api_key.strip()
         self.model = model
         self.timeout = timeout
+        #: 单次输出上限。None 表示不限制（交给服务端默认值）。
+        self.max_tokens = max_tokens
         self.name = f"云端/{model}"
         self.is_remote = True
         self._client: httpx.AsyncClient | None = None
@@ -84,6 +87,8 @@ class OpenAICompatProvider(LLMProvider):
             # 大多数兼容服务都支持 json_object；结构由提示词 + pydantic 校验兜底
             "response_format": {"type": "json_object"},
         }
+        if self.max_tokens is not None:
+            payload["max_tokens"] = self.max_tokens
 
         client = self._get_client()
         try:

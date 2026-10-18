@@ -32,10 +32,12 @@ from app.bili.subtitles import merge_adjacent_segments
 from app.bili.urls import parse_video_input
 from app.config import Settings
 from app.errors import MyNoteError, NoTranscriptAvailable
-from app.llm.factory import build_provider
+from app.llm.base import LLMProvider
+from app.llm.factory import build_polish_provider, build_provider
 from app.media.downloader import AudioDownloader
 from app.notes.chunking import transcript_to_text
 from app.notes.pipeline import NoteGenerator
+from app.notes.polish import polish_note
 from app.notes.render import render_index_markdown, render_note_markdown
 from app.schemas import (
     Job,
@@ -278,6 +280,13 @@ class NotePipeline:
                 "视频字幕文本已发送给第三方服务。"
             )
 
+        # ---------------- 4.5 本地稿 → 云端单次润色（可选）----------------
+        note = await self._maybe_polish(
+            note, meta, provider, report, notices=notices
+        )
+
+        check_cancel()
+
         # ---------------- 5. 渲染与落盘 ----------------
         report(JobStage.RENDERING, 0.96, "正在保存笔记…")
         note_id = reuse_or_new_note_id(self.db, meta.bvid, page)
@@ -325,6 +334,66 @@ class NotePipeline:
             markdown_path=str(path),
             notices=notices,
         )
+
+    async def _maybe_polish(
+        self,
+        note: Note,
+        meta: VideoMeta,
+        provider: LLMProvider,
+        report: StageCb,
+        *,
+        notices: list[str],
+    ) -> Note:
+        """「本地出稿 + 云端单次润色」：拿已成形初稿让云端改一遍。
+
+        任何一步不满足都只加一条提示、**保留本地稿** ——
+        润色是加分项，不能因为润色失败把已经生成好的笔记丢掉。
+        """
+        if not self.settings.polish_enabled:
+            return note
+        if provider.is_remote:
+            # 整篇本来就是云端生成的，再润色一次纯属白花钱。
+            return note
+        if not self.settings.allow_cloud:
+            notices.append(
+                "⚠️ 开了云端润色（POLISH_ENABLED），但没有 ALLOW_CLOUD=true，"
+                "本次跳过润色、保留本地稿。"
+            )
+            return note
+
+        polisher = build_polish_provider(self.settings)
+        if polisher is None:
+            notices.append(
+                "⚠️ 开了云端润色，但没配 POLISH_API_KEY / OPENAI_API_KEY，"
+                "本次跳过润色、保留本地稿。"
+            )
+            return note
+
+        report(
+            JobStage.SUMMARIZING,
+            0.965,
+            "本地稿已成形，正在云端润色（只调用一次）…",
+        )
+        try:
+            polished = await polish_note(
+                note, meta, settings=self.settings, provider=polisher
+            )
+        except Exception as exc:  # noqa: BLE001 - 润色失败不能拖垮整条流水线
+            logger.warning("云端润色失败，保留本地稿：%s", exc)
+            notices.append(f"⚠️ 云端润色失败（{exc}），已保留本地稿。")
+            return note
+        finally:
+            await polisher.aclose()
+
+        if polished is None:
+            notices.append(
+                "⚠️ 润色稿没通过校验（可能丢了时间戳或内容缩水），已保留本地稿。"
+            )
+            return note
+
+        model = self.settings.polish_model or self.settings.openai_model
+        notices.append(f"✍️ 已用 {model} 在本地稿基础上润色一遍（1 次调用）。")
+        return polished
 
     # ------------------------------------------------------------------
     async def _obtain_transcript(

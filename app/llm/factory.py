@@ -41,3 +41,26 @@ def build_provider(settings: Settings) -> LLMProvider:
         )
 
     raise ConfigError(f"未知的 LLM_PROVIDER：{settings.llm_provider!r}")
+
+
+def build_polish_provider(settings: Settings) -> OpenAICompatProvider | None:
+    """构造「本地出稿 + 云端润色」用的云端提供方。
+
+    与 :func:`build_provider` 分开，是因为润色**不是**一次完整生成：
+    它只拿本地已经成稿的笔记结构去改一遍，不重新读转写。
+    返回 ``None`` 表示当前配置不满足润色条件（开关/授权/密钥），
+    调用方应保留本地稿。
+
+    ⚠️ 隐私边界：调用它意味着**笔记正文**会发送给第三方 ——
+    所以同样要求 ``ALLOW_CLOUD=true`` 显式授权。
+    """
+    if not settings.polish_ready:
+        return None
+    return OpenAICompatProvider(
+        base_url=settings.polish_base_url or settings.openai_base_url,
+        api_key=settings.polish_api_key or settings.openai_api_key,
+        model=settings.polish_model or settings.openai_model,
+        timeout=settings.polish_timeout,
+        consent=settings.allow_cloud,
+        max_tokens=settings.polish_max_tokens,
+    )
