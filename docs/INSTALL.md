@@ -7,6 +7,9 @@
 >
 > 想让生成的笔记直接进 Obsidian 库？看 **[docs/OBSIDIAN.md](OBSIDIAN.md)** ——
 > 最快三步（把 `DATA_DIR` 指到库里的一个文件夹），也有「模型和音频留在库外」的干净接法。
+>
+> 不想自己敲命令？看 **[docs/DEPLOY-WITH-AI.md](DEPLOY-WITH-AI.md)** ——
+> 里面有一段可以直接贴给 AI 的部署提示词，它会帮你装依赖、拉模型、跑自检。
 
 ---
 
