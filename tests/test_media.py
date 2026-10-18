@@ -55,7 +55,9 @@ def test_video_download_retries_a_whole_round(settings, monkeypatch):
     fake = types.ModuleType("yt_dlp")
     fake.YoutubeDL = FakeYDL  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
-    monkeypatch.setattr("app.media.downloader.time.sleep", lambda _s: None)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.media.downloader.time.sleep", sleeps.append)
 
     downloader = AudioDownloader(settings)
     with pytest.raises(DownloadError):
@@ -65,5 +67,7 @@ def test_video_download_retries_a_whole_round(settings, monkeypatch):
             )
         )
 
-    # 假模块里没有 impersonate API，所以每轮只有「默认」一路：两轮 = 2 次
-    assert len(calls) == 2
+    # 每轮至少试「默认」这一路，两轮下来一定不止一次；
+    # 轮与轮之间会 sleep 一次 —— 用 sleep 次数判定「整轮重试」确实发生了。
+    assert len(calls) >= 2
+    assert len(sleeps) == 1
