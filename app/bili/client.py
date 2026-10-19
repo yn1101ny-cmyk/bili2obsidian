@@ -636,12 +636,19 @@ class BiliClient:
     # ------------------------------------------------------------------
     # 字幕
     # ------------------------------------------------------------------
-    async def get_subtitle_tracks(self, aid: int, cid: int) -> list[SubtitleTrack]:
-        """获取字幕轨道列表。未登录时通常为空（会走 Whisper 兜底）。"""
+    async def get_subtitle_tracks(
+        self, aid: int, cid: int, use_cache: bool = True
+    ) -> list[SubtitleTrack]:
+        """获取字幕轨道列表。未登录时通常为空（会走 Whisper 兜底）。
+
+        这个接口会抽风（同一请求两次，返回的轨道数会变），调用方可以传
+        ``use_cache=False`` 强制重新问一次，绕开可能已被写错结果的本地缓存。
+        """
         data = await self._get_json(
             _API_PLAYER,
             params={"aid": aid, "cid": cid},
             cache_key=f"player:{aid}:{cid}",
+            use_cache=use_cache,
         )
         return parse_subtitle_tracks(data)
 

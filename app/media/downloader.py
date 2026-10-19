@@ -29,7 +29,7 @@ from app.media.ffmpeg import ffmpeg_dir
 logger = logging.getLogger(__name__)
 
 #: 优先纯音频流；不指定容器，让 yt-dlp 选最优音频
-_FORMAT_SELECTOR = "ba[ext=m4a]/ba/b"
+_FORMAT_SELECTOR = "ba[abr<=64000]/ba[abr<=132000]/ba[ext=m4a]/ba/b"
 
 #: 文件名里不允许出现的字符
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -100,8 +100,8 @@ class AudioDownloader:
             "noprogress": True,
             "noplaylist": True,          # 只下当前分P，合集由上层拆开处理
             "http_headers": headers,
-            "retries": 3,
-            "fragment_retries": 3,
+            "retries": 5,
+            "fragment_retries": 5,
             "socket_timeout": 30,
             "progress_hooks": [progress_hook],
             "logger": on_log,

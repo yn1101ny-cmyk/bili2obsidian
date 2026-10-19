@@ -45,6 +45,17 @@ from app.config import get_settings  # noqa: E402
 from app.media.downloader import AudioDownloader  # noqa: E402
 from app.notes.chunking import transcript_to_text  # noqa: E402
 
+# Windows 控制台默认 GBK：视频标题里带 emoji（🧭 之类）时，最后一行 JSON 会抛
+# UnicodeEncodeError 让脚本以退出码 1 结束（产物其实已经写好了）。这里把输出钉成 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - 老解释器或已被重定向的流，忽略
+        pass
+
+#: 字幕末段时间戳至少要覆盖全片这个比例，否则认定字幕对不上（B站 偶发返回别的视频的字幕）。
+SUBTITLE_MIN_COVERAGE = 0.8
+
 BV_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
 AV_RE = re.compile(r"av(\d+)", re.IGNORECASE)
 P_RE = re.compile(r"[?&]p=(\d+)")
@@ -252,22 +263,120 @@ async def web_aid_cid(settings, bvid: str, page: int):
     return mine_aid_cid(html, bvid, page)
 
 
-async def bili_subtitle(settings, bvid: str, page: int):
+#: 字幕接口不稳定：同一 aid+cid 连问两次，返回的轨道数会变（实测 6 -> 1、0 -> 1）
+SUBTITLE_ATTEMPTS = 3
+#: 歌词标记：B站 AI 字幕偶尔会把 BGM 的歌词当成字幕
+LYRICS_MARKERS = ("♪", "♫", "♬")
+LYRICS_SHARE_LIMIT = 0.3
+
+
+def subtitle_url_owned(url: str, aid: int, cid: int) -> bool | None:
+    """判断这条字幕记录是不是本视频的。
+
+    B站 AI 字幕的 CDN 路径形如 ``ai_subtitle/prod/<aid><cid><hash>``，把前缀和自己的
+    aid+cid 对一下就能识破"接口回了别人家视频的字幕"（2026-10 实测：黑马 Java p27
+    拿到的是另一条视频的记录，内容是歌词）。人工字幕是 ``bfs/subtitle/<hash>``，
+    没有这个前缀，判断不了就返回 None（表示"未校验"，不是"不属于"）。
+    """
+    if "ai_subtitle" not in (url or ""):
+        return None
+    return f"{aid}{cid}" in url
+
+
+def looks_like_lyrics(segments) -> bool:
+    """段里大量出现 ♪/♫/♬ ⇒ 判定为歌词（BGM），不是讲解。"""
+    if not segments:
+        return False
+    marked = sum(1 for s in segments if any(m in (s.text or "") for m in LYRICS_MARKERS))
+    return marked / len(segments) >= LYRICS_SHARE_LIMIT
+
+
+async def bili_subtitle(settings, bvid: str, page: int, duration_sec: float = 0.0):
     """问 B站 要字幕（走 MyNoteApp 的 BiliClient，需要 BILI_SESSDATA）。
 
-    返回 (Transcript | None, 一句话说明)。**任何异常都在调用方兜住** ——
-    拿不到字幕是预期路径，不是错误。
+    返回 (Transcript | None, 一句话说明)。**任何异常都在调用方兜住** —— 拿不到字幕是
+    预期路径，不是错误。
+
+    三道校验（2026-10-19 加，起因是连续三次拿到"不是这条视频"的字幕）：
+
+    1. **归属**：AI 字幕 URL 里的 ``<aid><cid>`` 必须与本视频一致；
+    2. **覆盖**：字幕末段至少覆盖全片的 ``SUBTITLE_MIN_COVERAGE``；
+    3. **内容**：♪ 标记占比过高 ⇒ 判为歌词而不是讲解。
+
+    任一不过就重试（接口本身也会抽风）。第一次走缓存，之后强制走网络 ——
+    缓存里可能正是那条错的。
     """
     from app.bili.client import BiliClient
+    from app.bili.subtitles import pick_best_track
+    from app.schemas import Transcript
 
     if not settings.has_bili_login:
         return None, "未配置 B站登录态（BILI_SESSDATA），B站 AI 字幕需要登录"
+
     aid, cid, _part = await web_aid_cid(settings, bvid, page)
+    reasons: list[str] = []
+
     async with BiliClient(settings) as bili:
-        transcript = await bili.try_get_subtitle(aid, cid)
-    if transcript is None or transcript.is_empty():
-        return None, "该视频没有可用字幕"
-    return transcript, f"命中 B站字幕（{transcript.source.label}）"
+        for attempt in range(1, SUBTITLE_ATTEMPTS + 1):
+            try:
+                tracks = await bili.get_subtitle_tracks(aid, cid, use_cache=attempt == 1)
+            except Exception as exc:  # noqa: BLE001
+                reasons.append(f"第{attempt}次取轨道失败（{type(exc).__name__}）")
+                await asyncio.sleep(1.0)
+                continue
+
+            if not tracks:
+                reasons.append(f"第{attempt}次无字幕轨道")
+                await asyncio.sleep(1.0)
+                continue
+
+            owned = [t for t in tracks if subtitle_url_owned(t.url, aid, cid) is not False]
+            if not owned:
+                reasons.append(f"第{attempt}次字幕不属于本视频（URL 里没有 {aid}{cid}）")
+                await asyncio.sleep(1.0)
+                continue
+            unverified = all(subtitle_url_owned(t.url, aid, cid) is None for t in owned)
+
+            track = pick_best_track(owned)
+            if track is None:
+                reasons.append(f"第{attempt}次没有可用轨道")
+                continue
+
+            try:
+                segments = await bili.fetch_subtitle(track)
+            except Exception as exc:  # noqa: BLE001
+                reasons.append(f"第{attempt}次下载字幕失败（{type(exc).__name__}）")
+                await asyncio.sleep(1.0)
+                continue
+
+            seg_end = max((float(getattr(s, "end", 0) or 0) for s in segments), default=0.0)
+            if duration_sec and seg_end < duration_sec * SUBTITLE_MIN_COVERAGE:
+                reasons.append(
+                    f"第{attempt}次字幕只覆盖 {seg_end / duration_sec:.0%}"
+                    f"（末段 {seg_end:.0f}s / 全长 {duration_sec:.0f}s）"
+                )
+                await asyncio.sleep(1.0)
+                continue
+
+            if looks_like_lyrics(segments):
+                reasons.append(f"第{attempt}次字幕疑似歌词（BGM）")
+                await asyncio.sleep(1.0)
+                continue
+
+            note = f"命中 B站字幕（{track.source.label}）"
+            if unverified:
+                note += "；无法校验归属（非 AI 字幕路径）"
+            return (
+                Transcript(
+                    segments=segments,
+                    source=track.source,
+                    language=track.lan,
+                    note=f"字幕轨道 {track.label}",
+                ),
+                note,
+            )
+
+    return None, "字幕不可用：" + "；".join(reasons)
 
 
 async def run_one(args, raw_url: str, page: int) -> dict:
@@ -308,37 +417,60 @@ async def run_one(args, raw_url: str, page: int) -> dict:
     # ---- 1a) 先问 B站 要字幕（最准、最快）----
     if not args.no_subs:
         try:
-            transcript, why = await bili_subtitle(settings, vid, page)
+            transcript, why = await bili_subtitle(settings, vid, page, info["duration_sec"])
         except Exception as exc:  # noqa: BLE001 - 字幕是加分项，失败就转写
             transcript, why = None, f"字幕查询失败：{type(exc).__name__}: {exc}"
+        # 闸门：B站 偶尔会返回「别的视频」的字幕轨道（2026-10-18 实测：hit=True，但内容与
+        # 本视频毫无关系，字幕末段只到全片 37%）。用「末段时间戳 vs 视频时长」把它挡掉。
+        if transcript is not None:
+            segs = getattr(transcript, "segments", None) or []
+            seg_end = max((float(getattr(s, "end", 0) or 0) for s in segs), default=0.0)
+            duration = float(info.get("duration_sec") or 0)
+            if duration > 0 and seg_end < duration * SUBTITLE_MIN_COVERAGE:
+                why = (
+                    f"字幕与视频时长不匹配（末段 {seg_end:.0f}s / 全长 {duration:.0f}s，"
+                    f"覆盖 {seg_end / duration:.0%}），疑似抓到了别的视频的字幕，已弃用"
+                )
+                transcript = None
         info["subtitle"] = {"hit": transcript is not None, "note": why}
         if transcript is None:
             print(f"[i] {vid} p{page} 没拿到字幕：{why}", file=sys.stderr)
 
     # ---- 1b) 没字幕就下载音频走本地转写（音频不需要登录）----
     if transcript is None and not args.no_audio:
-        downloader = AudioDownloader(settings)
-        audio = await downloader.download(
-            url=info["url"],
-            bvid=vid,
-            page=page,
-            title=title,
-            force=args.force,
-            on_progress=lambda f, m: None,
-        )
-        engine = WhisperEngine(settings)
-        hotwords = build_hotwords(
-            title=title,
-            part_title=info.get("part_title"),
-            owner=info["uploader"] or "",
-            tags=info["tags"],
-        )
+        # 音频挂掉（CDN 超时、登录态失效）不该让整条任务失败：继续跑画面 OCR，
+        # 退化成「画面为主」的产物，并把原因写进 meta.json。
         try:
-            t0 = time.time()
-            transcript = await asyncio.to_thread(engine.transcribe, audio, hotwords=hotwords or None)
-            asr_sec = time.time() - t0
-        finally:
-            engine.unload()
+            downloader = AudioDownloader(settings)
+            audio = await downloader.download(
+                url=info["url"],
+                bvid=vid,
+                page=page,
+                title=title,
+                force=args.force,
+                on_progress=lambda f, m: None,
+            )
+            engine = WhisperEngine(settings)
+            hotwords = build_hotwords(
+                title=title,
+                part_title=info.get("part_title"),
+                owner=info["uploader"] or "",
+                tags=info["tags"],
+            )
+            try:
+                t0 = time.time()
+                transcript = await asyncio.to_thread(
+                    engine.transcribe, audio, hotwords=hotwords or None
+                )
+                asr_sec = time.time() - t0
+            finally:
+                engine.unload()
+        except Exception as exc:  # noqa: BLE001 - 音频是主路径但允许失败
+            info["transcript_error"] = f"{type(exc).__name__}: {exc}"
+            print(
+                f"[!] {vid} p{page} 音频下载/转写失败，改走「画面为主」：{exc}",
+                file=sys.stderr,
+            )
 
     if transcript is not None:
         transcript = transcript.model_copy(
